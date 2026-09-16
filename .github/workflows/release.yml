@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*.*.*"
+  release:
+    types:
+      - published
 
 permissions:
   contents: write
@@ -19,12 +22,16 @@ jobs:
       - name: Build CoffeeCup DMG
         run: ./scripts/create-dmg.sh
 
-      - name: Publish GitHub Release
+      - name: Upload CoffeeCup DMG to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "build/CoffeeCup.dmg#CoffeeCup.dmg" \
-            --verify-tag \
-            --title "CoffeeCup ${GITHUB_REF_NAME}" \
-            --generate-notes
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "${GITHUB_REF_NAME}" \
+              "build/CoffeeCup.dmg#CoffeeCup.dmg" \
+              --clobber; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
