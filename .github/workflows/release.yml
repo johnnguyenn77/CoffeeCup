@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: xcode-27
+    runs-on: macos-15
 
     steps:
       - name: Check out source
@@ -43,14 +43,14 @@ jobs:
             -configuration Release \
             -sdk macosx \
             -showBuildSettings 2>/dev/null \
-            | awk -F ' = ' '/MARKETING_VERSION/ { print $2; exit }')"
+            | awk -F ' = ' '/MARKETING_VERSION/ { print \$2; exit }')"
 
           if [[ "$project_version" != "$version" ]]; then
             echo "Release tag $version does not match project version $project_version." >&2
             exit 1
           fi
 
-          sha256="$(shasum -a 256 build/CoffeeCup.dmg | awk '{ print $1 }')"
+          sha256="$(shasum -a 256 build/CoffeeCup.dmg | awk '{ print \$1 }')"
           mkdir -p build
           cat > build/coffeecup.rb <<EOF
 cask "coffeecup" do
