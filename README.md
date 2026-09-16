@@ -47,7 +47,29 @@ The repository includes a drag-and-drop installer script:
 open build/CoffeeCup.dmg
 ```
 
+Release DMGs are built for both Apple silicon and Intel Macs.
+
 The DMG contains `CoffeeCup.app` and an `/Applications` shortcut. Drag the app onto the shortcut, open it from `/Applications`, and enable **Launch at login**. Configure your Apple Development team in Xcode first if you want Login Items registration to work; otherwise the local build will be ad-hoc signed.
+
+## Install with Homebrew
+
+After the `v1.0.3` release is published, CoffeeCup will be available through a custom Homebrew tap backed by this repository. It is not part of the official Homebrew cask repository, and the app is currently ad-hoc signed.
+
+Add the tap and install CoffeeCup with:
+
+```sh
+brew tap johnnguyenn77/coffeecup https://github.com/johnnguyenn77/CoffeeCup.git
+brew install --cask johnnguyenn77/coffeecup/coffeecup
+```
+
+To update CoffeeCup later:
+
+```sh
+brew update
+brew upgrade --cask johnnguyenn77/coffeecup/coffeecup
+```
+
+The release workflow updates `Casks/coffeecup.rb` with the new release version and DMG checksum whenever a GitHub release is published. Because the app is not notarized yet, macOS may show a security warning when it is first opened.
 
 ## Terminal build
 
@@ -74,10 +96,33 @@ git push -u origin main
 Then create the release on GitHub:
 
 1. Open **Releases → Draft a new release**.
-2. Enter a new version tag, such as `v1.0.2`, and select `main` as the target.
+2. Enter a new version tag matching the project version, such as `v1.0.3`, and select `main` as the target.
 3. Publish the release.
 4. Wait for the **Release CoffeeCup** GitHub Actions workflow to finish.
 
-The workflow attaches `CoffeeCup.dmg` to the release. Users can download the DMG from the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
+The workflow attaches `CoffeeCup.dmg` to the release and updates the Homebrew cask on `main`. Users can download the DMG from the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
 
 The automated workflow currently creates an ad-hoc signed build. For a public download without Gatekeeper warnings, configure Apple Developer ID signing and notarization in the workflow before distributing it broadly.
+
+## Publish a release
+
+After making app changes, use the release helper from the project directory:
+
+```sh
+./scripts/release.sh
+```
+
+This publishes the current project version if it has not been tagged yet; subsequent runs increment the patch version. It also increments the build number, commits the changes, creates a matching Git tag, and pushes both to GitHub. To choose a specific version instead, pass it explicitly:
+
+```sh
+./scripts/release.sh 1.1.0
+```
+
+The tag push automatically creates the GitHub release, uploads the DMG, and refreshes the Homebrew cask. After the release workflow finishes, update an existing installation with:
+
+```sh
+brew update
+brew upgrade --cask johnnguyenn77/coffeecup/coffeecup
+```
+
+The release workflow also updates `Casks/coffeecup.rb` on `main`; pull that workflow commit before starting the next release from an older local checkout.
