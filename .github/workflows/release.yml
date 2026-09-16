@@ -51,29 +51,29 @@ jobs:
             -configuration Release \
             -sdk macosx \
             -showBuildSettings 2>/dev/null \
-            | awk -F ' = ' '/MARKETING_VERSION/ { print \$2; exit }')"
+            | awk -F ' = ' '/MARKETING_VERSION/ { print $2; exit }')"
 
           if [[ "$project_version" != "$version" ]]; then
             echo "Release tag $version does not match project version $project_version." >&2
             exit 1
           fi
 
-          sha256="$(shasum -a 256 build/CoffeeCup.dmg | awk '{ print \$1 }')"
+          sha256="$(shasum -a 256 build/CoffeeCup.dmg | awk '{ print $1 }')"
           mkdir -p build
           cat > build/coffeecup.rb <<EOF
-cask "coffeecup" do
-  version "$version"
-  sha256 "$sha256"
+          cask "coffeecup" do
+            version "$version"
+            sha256 "$sha256"
 
-  url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
-  name "CoffeeCup"
-  desc "Menu bar app for toggling caffeinate"
-  homepage "https://github.com/johnnguyenn77/CoffeeCup"
+            url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
+            name "CoffeeCup"
+            desc "Menu bar app for toggling caffeinate"
+            homepage "https://github.com/johnnguyenn77/CoffeeCup"
 
-  depends_on macos: :ventura
+            depends_on macos: :ventura
 
-  app "CoffeeCup.app"
-end
+            app "CoffeeCup.app"
+          end
 EOF
 
       - name: Upload CoffeeCup DMG to GitHub Release
