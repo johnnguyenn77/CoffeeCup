@@ -17,12 +17,15 @@ fi
 mkdir -p "$build_dir"
 
 echo "Building CoffeeCup.app in Release configuration..."
-DEVELOPER_DIR="$developer_dir" xcodebuild \
+DEVELOPER_DIR="$developer_dir" \
+xcodebuild \
     -project "$project_root/CoffeeCup.xcodeproj" \
     -scheme CoffeeCup \
     -configuration Release \
     -sdk macosx \
     -derivedDataPath "$derived_data_dir" \
+    ARCHS="arm64 x86_64" \
+    ONLY_ACTIVE_ARCH=NO \
     build
 
 app_path="$derived_data_dir/Build/Products/Release/CoffeeCup.app"
