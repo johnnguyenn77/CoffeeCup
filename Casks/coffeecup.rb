@@ -1,7 +1,6 @@
 cask "coffeecup" do
   version "1.0.3"
-  # The release workflow replaces this with the SHA-256 of the published DMG.
-  sha256 :no_check
+  sha256 "418628b2c7c037a2cb38b3e97b67bf8838267f66a43f5d59d3aebe4746faffae"
 
   url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
   name "CoffeeCup"
