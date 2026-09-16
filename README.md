@@ -36,6 +36,8 @@ For a local install, use a signed Release build:
 
 The popover includes a **Launch at login** toggle. Turn it on after installing the app. If macOS asks for approval, open **System Settings → General → Login Items** and allow CoffeeCup. The app must be code-signed for macOS to register it as a login item.
 
+CoffeeCup saves your Launch at login preference outside the app bundle and restores the login item when the app starts after an update. With an ad-hoc signed build, macOS may still require approval after replacing the app; Developer ID signing and notarization provide the smoothest update experience.
+
 ## Create a DMG
 
 The repository includes a drag-and-drop installer script:
