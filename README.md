@@ -10,6 +10,10 @@ caffeinate -dimsu
 
 That prevents idle system sleep, display sleep, disk idle sleep, and system sleep while the app is active. Turn the toggle off to stop the command and restore normal sleep behavior.
 
+## Requirements
+
+- macOS 13.0 or later
+
 ## Run it in Xcode
 
 1. Open `CoffeeCup.xcodeproj` in Xcode.
@@ -55,7 +59,7 @@ The app uses `/usr/bin/caffeinate`, which is built into macOS. App Sandbox is di
 
 ## GitHub Releases
 
-The repository includes a GitHub Actions workflow that builds and publishes the DMG whenever you push a version tag.
+The repository includes a GitHub Actions workflow that builds the DMG and uploads it to a GitHub release when you publish that release.
 
 After creating a GitHub repository and adding it as `origin`:
 
@@ -63,10 +67,15 @@ After creating a GitHub repository and adding it as `origin`:
 git add -A
 git commit -m "Prepare CoffeeCup release"
 git push -u origin main
-git tag v1.0.0
-git push origin v1.0.0
 ```
 
-GitHub Actions will create a release named `CoffeeCup v1.0.0` and attach `CoffeeCup.dmg`. Users can download the DMG from the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
+Then create the release on GitHub:
+
+1. Open **Releases → Draft a new release**.
+2. Enter a new version tag, such as `v1.0.2`, and select `main` as the target.
+3. Publish the release.
+4. Wait for the **Release CoffeeCup** GitHub Actions workflow to finish.
+
+The workflow attaches `CoffeeCup.dmg` to the release. Users can download the DMG from the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
 
 The automated workflow currently creates an ad-hoc signed build. For a public download without Gatekeeper warnings, configure Apple Developer ID signing and notarization in the workflow before distributing it broadly.
