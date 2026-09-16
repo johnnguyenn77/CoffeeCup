@@ -1,0 +1,30 @@
+name: Release CoffeeCup
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: xcode-27
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build CoffeeCup DMG
+        run: ./scripts/create-dmg.sh
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "build/CoffeeCup.dmg#CoffeeCup.dmg" \
+            --verify-tag \
+            --title "CoffeeCup ${GITHUB_REF_NAME}" \
+            --generate-notes
