@@ -6,6 +6,8 @@ import ServiceManagement
 final class CoffeeCupController: ObservableObject {
     static let shared = CoffeeCupController()
 
+    private static let launchAtLoginPreferenceKey = "CoffeeCup.launchAtLogin"
+
     @Published private(set) var isActive = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var launchesAtLogin = false
@@ -13,6 +15,7 @@ final class CoffeeCupController: ObservableObject {
     private var process: Process?
 
     init() {
+        restoreLaunchAtLoginIfNeeded()
         refreshLoginItemStatus()
     }
 
@@ -56,6 +59,8 @@ final class CoffeeCupController: ObservableObject {
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.launchAtLoginPreferenceKey)
+
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -82,5 +87,27 @@ final class CoffeeCupController: ObservableObject {
 
     func refreshLoginItemStatus() {
         launchesAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    private func restoreLaunchAtLoginIfNeeded() {
+        let service = SMAppService.mainApp
+        let savedPreference = UserDefaults.standard.object(
+            forKey: Self.launchAtLoginPreferenceKey
+        ) as? Bool
+
+        // Migrate an existing enabled login item from versions that did not
+        // persist the user's preference yet.
+        if savedPreference == nil {
+            if service.status == .enabled {
+                UserDefaults.standard.set(true, forKey: Self.launchAtLoginPreferenceKey)
+            }
+            return
+        }
+
+        guard savedPreference == true, service.status != .enabled else { return }
+
+        // Re-register after an app replacement. UserDefaults survives app
+        // updates because it is stored outside the application bundle.
+        try? service.register()
     }
 }
