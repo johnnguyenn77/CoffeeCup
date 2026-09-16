@@ -4,9 +4,6 @@ on:
   push:
     tags:
       - "v*.*.*"
-  release:
-    types:
-      - published
 
 permissions:
   contents: write
@@ -22,12 +19,62 @@ jobs:
       - name: Build CoffeeCup DMG
         run: ./scripts/create-dmg.sh
 
-      - name: Upload CoffeeCup DMG to GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --title "CoffeeCup ${GITHUB_REF_NAME#v}" \
+              --generate-notes
+          fi
+
+      - name: Prepare Homebrew cask
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          version="${RELEASE_TAG#v}"
+          project_version="$(xcodebuild \
+            -project CoffeeCup.xcodeproj \
+            -scheme CoffeeCup \
+            -configuration Release \
+            -sdk macosx \
+            -showBuildSettings 2>/dev/null \
+            | awk -F ' = ' '/MARKETING_VERSION/ { print $2; exit }')"
+
+          if [[ "$project_version" != "$version" ]]; then
+            echo "Release tag $version does not match project version $project_version." >&2
+            exit 1
+          fi
+
+          sha256="$(shasum -a 256 build/CoffeeCup.dmg | awk '{ print $1 }')"
+          mkdir -p build
+          cat > build/coffeecup.rb <<EOF
+cask "coffeecup" do
+  version "$version"
+  sha256 "$sha256"
+
+  url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
+  name "CoffeeCup"
+  desc "Menu bar app for toggling caffeinate"
+  homepage "https://github.com/johnnguyenn77/CoffeeCup"
+
+  depends_on macos: :ventura
+
+  app "CoffeeCup.app"
+end
+EOF
+
+      - name: Upload CoffeeCup DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
           for attempt in 1 2 3 4 5; do
-            if gh release upload "${GITHUB_REF_NAME}" \
+            if gh release upload "$RELEASE_TAG" \
               "build/CoffeeCup.dmg#CoffeeCup.dmg" \
               --clobber; then
               exit 0
@@ -35,3 +82,26 @@ jobs:
             sleep 10
           done
           exit 1
+
+      - name: Update Homebrew cask on main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+          git switch --create cask-update --track origin/main
+          mkdir -p Casks
+          cp build/coffeecup.rb Casks/coffeecup.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/coffeecup.rb
+
+          if git diff --cached --quiet; then
+            echo "Homebrew cask is already current."
+            exit 0
+          fi
+
+          git commit -m "Update CoffeeCup cask to ${RELEASE_TAG#v}"
+          git push origin HEAD:main

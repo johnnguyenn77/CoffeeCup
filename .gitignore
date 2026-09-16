@@ -17,3 +17,6 @@ xcuserdata/
 *.xcarchive
 *.ipa
 *.dSYM.zip
+
+# Local agent instructions
+AGENTS.md
