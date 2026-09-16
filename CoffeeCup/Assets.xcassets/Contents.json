@@ -1,0 +1,7 @@
+sed: --: No such file or directory
+{
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
