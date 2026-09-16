@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to build and publish"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,10 +17,14 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Build CoffeeCup DMG
         run: ./scripts/create-dmg.sh
@@ -23,16 +33,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" \
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
               --verify-tag \
-              --title "CoffeeCup ${GITHUB_REF_NAME#v}" \
+              --title "CoffeeCup ${RELEASE_TAG#v}" \
               --generate-notes
           fi
 
       - name: Prepare Homebrew cask
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -71,7 +79,6 @@ EOF
       - name: Upload CoffeeCup DMG to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           for attempt in 1 2 3 4 5; do
             if gh release upload "$RELEASE_TAG" \
@@ -84,8 +91,6 @@ EOF
           exit 1
 
       - name: Update Homebrew cask on main
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
