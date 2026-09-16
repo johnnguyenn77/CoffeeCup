@@ -74,7 +74,7 @@ jobs:
 
             app "CoffeeCup.app"
           end
-EOF
+          EOF
 
       - name: Upload CoffeeCup DMG to GitHub Release
         env:
