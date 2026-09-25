@@ -1,14 +1,16 @@
 # CoffeeCup
 
-CoffeeCup is a tiny macOS menu-bar app for toggling `caffeinate`.
+CoffeeCup is a tiny macOS menu-bar app for keeping the display awake.
 
 When the toggle is on, the app runs:
 
 ```sh
-caffeinate -dimsu
+caffeinate -d
 ```
 
-That prevents idle system sleep, display sleep, disk idle sleep, and system sleep while the app is active. Turn the toggle off to stop the command and restore normal sleep behavior.
+That prevents the display from sleeping while the app is active. System and disk sleep continue to work normally. Turn the toggle off to stop the command.
+
+CoffeeCup checks GitHub for a newer release on first launch when needed, then every Wednesday at 9 a.m. local time while the app is running. If an update is available, a download icon appears beside the app name and downloads the release DMG when clicked. To update a DMG-installed copy, quit CoffeeCup, open the downloaded DMG, drag CoffeeCup into `/Applications`, and choose **Replace** when prompted. Then reopen the app. If installed with Homebrew, update it with the Homebrew command below so the cask stays in sync.
 
 ## Requirements
 
@@ -20,7 +22,7 @@ That prevents idle system sleep, display sleep, disk idle sleep, and system slee
 2. Select the `CoffeeCup` scheme and choose **My Mac** as the run destination.
 3. Press **Run** (`⌘R`).
 4. Look for the coffee-cup icon in the macOS menu bar.
-5. Click the icon and switch on **Keep Mac awake**.
+5. Click the icon and switch on **Keep display awake**.
 
 The app is configured as a menu-bar accessory, so it does not open a normal Dock window. Use **Quit** in the popover to close it.
 
@@ -100,7 +102,7 @@ Then create the release on GitHub:
 3. Publish the release.
 4. Wait for the **Release CoffeeCup** GitHub Actions workflow to finish.
 
-The workflow attaches `CoffeeCup.dmg` to the release and updates the Homebrew cask on `main`. Users can download the DMG from the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
+The workflow attaches `CoffeeCup.dmg` to the release and updates the Homebrew cask on `main`. Users can download the DMG from the update icon or the release page, drag CoffeeCup into `/Applications`, and enable **Launch at login**.
 
 The automated workflow currently creates an ad-hoc signed build. For a public download without Gatekeeper warnings, configure Apple Developer ID signing and notarization in the workflow before distributing it broadly.
 

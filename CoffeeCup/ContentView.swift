@@ -6,13 +6,25 @@ struct ContentView: View {
     @State private var isQuitHovered = false
 
     var body: some View {
+        if #available(macOS 15.0, *) {
+            popupContent
+                .containerBackground(for: .window) {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(.regularMaterial)
+                }
+        } else {
+            popupContent
+        }
+    }
+
+    private var popupContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
-                keepAwakeRow
+                keepDisplayAwakeRow
                 launchAtLoginRow
             }
 
@@ -31,19 +43,26 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             Image(systemName: caffeinate.isActive ? "sun.max.fill" : "moon.zzz.fill")
                 .font(.title2)
                 .foregroundStyle(caffeinate.isActive ? .orange : .secondary)
                 .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("CoffeeCup")
-                    .font(.title3.weight(.semibold))
+            Text("CoffeeCup")
+                .font(.title3.weight(.semibold))
 
-                Text(caffeinate.isActive ? "Your Mac is staying awake" : "Sleep is allowed")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            if let updateVersion = caffeinate.updateAvailableVersion {
+                Button {
+                    caffeinate.downloadUpdateDMG()
+                } label: {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .help("Download CoffeeCup \(updateVersion). Open the DMG and replace CoffeeCup in Applications.")
+                .accessibilityLabel("Download CoffeeCup update, version \(updateVersion)")
             }
 
             Spacer(minLength: 0)
@@ -58,7 +77,7 @@ struct ContentView: View {
             .padding(.vertical, 4)
             .background(
                 isQuitHovered ? Color.primary.opacity(0.12) : .clear,
-                in: RoundedRectangle(cornerRadius: 6)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .onHover { isHovered in
                 withAnimation(.easeOut(duration: 0.12)) {
@@ -68,23 +87,14 @@ struct ContentView: View {
         }
     }
 
-    private var keepAwakeRow: some View {
+    private var keepDisplayAwakeRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Keep Mac awake")
-                    .font(.headline)
-
-                Text(caffeinate.isActive
-                     ? "Sleep prevented while enabled."
-                     : "Sleep allowed normally.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text("Keep display awake")
+                .font(.headline)
 
             Spacer(minLength: 12)
 
-            Toggle("Keep Mac awake", isOn: Binding(
+            Toggle("Keep display awake", isOn: Binding(
                 get: { caffeinate.isActive },
                 set: { caffeinate.setActive($0) }
             ))
@@ -96,17 +106,8 @@ struct ContentView: View {
 
     private var launchAtLoginRow: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Launch at login")
-                    .font(.headline)
-
-                Text(caffeinate.launchesAtLogin
-                     ? "Starts when you sign in."
-                     : "Start CoffeeCup when you sign in.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            Text("Launch at login")
+                .font(.headline)
 
             Spacer(minLength: 12)
 

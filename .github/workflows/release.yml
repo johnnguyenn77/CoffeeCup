@@ -67,7 +67,7 @@ jobs:
 
             url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
             name "CoffeeCup"
-            desc "Menu bar app for toggling caffeinate"
+            desc "Keep your Mac display awake from the menu bar"
             homepage "https://github.com/johnnguyenn77/CoffeeCup"
 
             depends_on macos: :ventura

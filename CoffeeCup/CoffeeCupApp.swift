@@ -2,6 +2,10 @@ import SwiftUI
 
 @MainActor
 final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        CoffeeCupController.shared.startWeeklyUpdateChecks()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         CoffeeCupController.shared.stop()
     }
