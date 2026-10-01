@@ -3,6 +3,7 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject private var caffeinate: CoffeeCupController
+    @StateObject private var displayRotation = DisplayRotationController()
     @State private var isQuitHovered = false
 
     var body: some View {
@@ -23,9 +24,9 @@ struct ContentView: View {
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 12) {
-                keepDisplayAwakeRow
-                launchAtLoginRow
+            keepDisplayAwakeRow
+            if displayRotation.hasDisplays {
+                DisplayRotationControls(controller: displayRotation)
             }
 
             if let errorMessage = caffeinate.errorMessage {
@@ -34,11 +35,25 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            launchAtLoginRow
         }
-        .padding(16)
-        .frame(width: 290, alignment: .topLeading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(width: 320, alignment: .topLeading)
         .onAppear {
             caffeinate.refreshLoginItemStatus()
+            displayRotation.refreshDisplays()
+
+            // Retry after AppKit has finished publishing its initial screen list.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                displayRotation.refreshDisplays()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didChangeScreenParametersNotification
+        )) { _ in
+            displayRotation.refreshDisplays()
         }
     }
 
@@ -103,7 +118,7 @@ struct ContentView: View {
     private var keepDisplayAwakeRow: some View {
         HStack(alignment: .center, spacing: 12) {
             Text("Keep display awake")
-                .font(.headline)
+                .font(.body)
 
             Spacer(minLength: 12)
 
@@ -120,7 +135,7 @@ struct ContentView: View {
     private var launchAtLoginRow: some View {
         HStack(alignment: .center, spacing: 12) {
             Text("Launch at login")
-                .font(.headline)
+                .font(.body)
 
             Spacer(minLength: 12)
 
