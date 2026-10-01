@@ -49,8 +49,14 @@ struct ContentView: View {
                 .foregroundStyle(caffeinate.isActive ? .orange : .secondary)
                 .frame(width: 28, height: 28)
 
-            Text("CoffeeCup")
-                .font(.title3.weight(.semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("CoffeeCup")
+                    .font(.title3.weight(.semibold))
+
+                Text(appVersion)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
 
             if let updateVersion = caffeinate.updateAvailableVersion {
                 Button {
@@ -85,6 +91,13 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var appVersion: String {
+        guard let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else {
+            return ""
+        }
+        return "v\(version)"
     }
 
     private var keepDisplayAwakeRow: some View {
