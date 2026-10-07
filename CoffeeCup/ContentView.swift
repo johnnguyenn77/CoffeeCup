@@ -3,8 +3,10 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject private var caffeinate: CoffeeCupController
-    @StateObject private var displayRotation = DisplayRotationController()
+    @StateObject private var displayRotation = DisplayRotationController.shared
+    @StateObject private var catMode = CatModeController.shared
     @State private var isQuitHovered = false
+    @State private var confirmCatModeActivation = false
 
     var body: some View {
         if #available(macOS 15.0, *) {
@@ -36,6 +38,15 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            catModeRow
+
+            if let errorMessage = catMode.errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             launchAtLoginRow
         }
         .padding(.horizontal, 16)
@@ -43,17 +54,14 @@ struct ContentView: View {
         .frame(width: 320, alignment: .topLeading)
         .onAppear {
             caffeinate.refreshLoginItemStatus()
-            displayRotation.refreshDisplays()
-
-            // Retry after AppKit has finished publishing its initial screen list.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                displayRotation.refreshDisplays()
-            }
         }
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSApplication.didChangeScreenParametersNotification
-        )) { _ in
-            displayRotation.refreshDisplays()
+        .alert("Turn On Cat Mode?", isPresented: $confirmCatModeActivation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Turn On Cat Mode", role: .destructive) {
+                catMode.setActive(true)
+            }
+        } message: {
+            Text("Cat Mode blocks keyboard and all pointer input, including the trackpad and external mouse. Exit with Control–Option–Command–Escape.")
         }
     }
 
@@ -146,6 +154,37 @@ struct ContentView: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .fixedSize()
+        }
+    }
+
+    private var catModeRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("🐱 Cat Mode")
+                .font(.body)
+
+            if catMode.isActive {
+                Text("⌃⌥⌘Esc")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Control Option Command Escape to unlock")
+            }
+
+            Spacer(minLength: 12)
+
+            Toggle("Cat Mode", isOn: Binding(
+                get: { catMode.isActive },
+                set: { enabled in
+                    if enabled {
+                        confirmCatModeActivation = true
+                    } else {
+                        catMode.setActive(false)
+                    }
+                }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .fixedSize()
+            .help("Blocks keyboard and pointer input. Press Control–Option–Command–Escape to exit.")
         }
     }
 }

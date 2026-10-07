@@ -82,6 +82,8 @@ struct DisplayRotationControls: View {
 
 @MainActor
 final class DisplayRotationController: ObservableObject {
+    static let shared = DisplayRotationController()
+
     @Published private(set) var displays: [RotationDisplay] = []
     @Published private(set) var selectedDisplayID: CGDirectDisplayID?
     @Published private(set) var currentRotation = 0

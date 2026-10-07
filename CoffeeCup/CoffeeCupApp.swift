@@ -11,6 +11,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
     func applicationDidFinishLaunching(_ notification: Notification) {
         let controller = CoffeeCupController.shared
         controller.startWeeklyUpdateChecks()
+        DisplayRotationController.shared.refreshDisplays()
 
         let hostingController = NSHostingController(
             rootView: ContentView().environmentObject(controller)
@@ -50,6 +51,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         )
         activityObserver = nil
         popover.close()
+        CatModeController.shared.stop()
         CoffeeCupController.shared.stop()
     }
 
@@ -75,6 +77,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
     }
 
     @objc private func displayConfigurationDidChange() {
+        DisplayRotationController.shared.refreshDisplays()
         guard popover.isShown else { return }
         schedulePopoverReanchor(after: 0.15)
         schedulePopoverReanchor(after: 0.6)
