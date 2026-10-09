@@ -9,6 +9,8 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
     private var activityObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CatModeController.shared.restoreFunctionKeyModeAfterUnexpectedQuit()
+
         let controller = CoffeeCupController.shared
         controller.startWeeklyUpdateChecks()
         DisplayRotationController.shared.refreshDisplays()
@@ -20,7 +22,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
         popover.contentViewController = hostingController
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = false
         popover.delegate = self
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)

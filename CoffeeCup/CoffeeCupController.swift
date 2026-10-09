@@ -130,7 +130,9 @@ final class CoffeeCupController: ObservableObject {
     }
 
     func refreshLoginItemStatus() {
-        launchesAtLogin = SMAppService.mainApp.status == .enabled
+        let isEnabled = SMAppService.mainApp.status == .enabled
+        guard launchesAtLogin != isEnabled else { return }
+        launchesAtLogin = isEnabled
     }
 
     private func restoreLaunchAtLoginIfNeeded() {
