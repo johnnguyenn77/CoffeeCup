@@ -78,8 +78,9 @@ final class CatModeController: ObservableObject {
             }
         )
 
-        guard prepareFunctionKeyMode() else { return }
-
+        // Swallow normal keyboard events, including standard F1–F12 input.
+        // Brightness and media controls may instead arrive as NX_SYSDEFINED,
+        // so include that event type and filter its known key codes below.
         let eventTypes: [CGEventType] = [
             .keyDown, .keyUp, .flagsChanged,
             .mouseMoved,
@@ -90,7 +91,7 @@ final class CatModeController: ObservableObject {
         ]
         let eventMask = eventTypes.reduce(CGEventMask(0)) { mask, type in
             mask | (CGEventMask(1) << type.rawValue)
-        }
+        } | (CGEventMask(1) << CatModeSystemDefinedKey.eventTypeValue)
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -117,35 +118,6 @@ final class CatModeController: ObservableObject {
         CGEvent.tapEnable(tap: tap, enable: true)
         isActive = true
         errorMessage = nil
-    }
-
-    private func prepareFunctionKeyMode() -> Bool {
-        guard !UserDefaults.standard.bool(forKey: Self.functionKeyModeRestorePendingKey) else {
-            errorMessage = Self.functionKeyRestoreFailureMessage
-            return false
-        }
-
-        guard let previousMode = FunctionKeyModeSetting.read() else {
-            errorMessage = "Could not read the current function-row setting. Cat Mode was not started."
-            return false
-        }
-
-        UserDefaults.standard.set(previousMode.rawValue, forKey: Self.savedFunctionKeyModeKey)
-        UserDefaults.standard.set(true, forKey: Self.functionKeyModeRestorePendingKey)
-        guard UserDefaults.standard.synchronize() else {
-            clearSavedFunctionKeyMode()
-            errorMessage = "Could not save your function-row setting. Cat Mode was not started."
-            return false
-        }
-
-        if FunctionKeyModeSetting.read() == .standardFunctionKeys
-            || (FunctionKeyModeSetting.write(true)
-                && FunctionKeyModeSetting.read() == .standardFunctionKeys) {
-            return true
-        }
-
-        failToStart("Could not switch the function row to standard F keys. Cat Mode was not started.")
-        return false
     }
 
     private func failToStart(_ message: String) {
@@ -256,6 +228,12 @@ private final class CatModeEventTapContext {
     }
 
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type.rawValue == CatModeSystemDefinedKey.eventTypeValue {
+            return CatModeSystemDefinedKey.shouldSuppress(event)
+                ? nil
+                : Unmanaged.passUnretained(event)
+        }
+
         if type == .flagsChanged {
             // Let modifier transitions through so the unlock chord doesn't leave
             // macOS believing a modifier key is still held after Cat Mode ends.
@@ -285,6 +263,35 @@ private final class CatModeEventTapContext {
 
     func handleDisabledTap() {
         reportTapDisabled()
+    }
+}
+
+private enum CatModeSystemDefinedKey {
+    // NSEventTypeSystemDefined / NX_SYSDEFINED is 14. Its auxiliary-control
+    // subtype (8) packs the NX_KEYTYPE value into the upper 16 bits of data1.
+    static let eventTypeValue: UInt32 = 14
+    private static let auxiliaryControlButtonsSubtype: Int16 = 8
+
+    // Suppress function-row media actions, but deliberately leave power and
+    // unknown system-defined events untouched.
+    private static let suppressedKeyTypes: Set<Int> = [
+        0, 1,             // Volume up/down
+        2, 3,             // Display brightness up/down
+        7,                // Mute
+        11, 12,           // Contrast up/down
+        13, 14, 15,       // Launch panel, eject, video mirroring
+        16, 17, 18, 19, 20, // Playback controls
+        21, 22, 23        // Keyboard illumination
+    ]
+
+    static func shouldSuppress(_ event: CGEvent) -> Bool {
+        guard let systemEvent = NSEvent(cgEvent: event),
+              systemEvent.subtype.rawValue == auxiliaryControlButtonsSubtype else {
+            return false
+        }
+
+        let keyType = Int((systemEvent.data1 >> 16) & 0xFFFF)
+        return suppressedKeyTypes.contains(keyType)
     }
 }
 

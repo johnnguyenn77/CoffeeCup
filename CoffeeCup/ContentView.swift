@@ -27,9 +27,6 @@ struct ContentView: View {
             Divider()
 
             keepDisplayAwakeRow
-            if displayRotation.hasDisplays {
-                DisplayRotationControls(controller: displayRotation)
-            }
 
             if let errorMessage = caffeinate.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -47,11 +44,15 @@ struct ContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if displayRotation.hasDisplays {
+                DisplayRotationControls(controller: displayRotation)
+            }
+
             launchAtLoginRow
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .frame(width: 320, alignment: .topLeading)
+        .frame(width: 260, alignment: .topLeading)
         .onAppear {
             caffeinate.refreshLoginItemStatus()
         }
@@ -61,7 +62,7 @@ struct ContentView: View {
                 catMode.setActive(true)
             }
         } message: {
-            Text("Cat Mode blocks keyboard and all pointer input, including the trackpad and external mouse. Exit with Control–Option–Command–Escape.")
+            Text("Cat Mode blocks keyboard and pointer input, including the trackpad and external mouse. Exit with Control–Option–Command–Escape.")
         }
     }
 

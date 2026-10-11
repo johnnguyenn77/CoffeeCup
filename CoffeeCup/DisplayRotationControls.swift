@@ -14,15 +14,8 @@ struct DisplayRotationControls: View {
         )
     }
 
-    private var rotationSelection: Binding<Int> {
-        Binding(
-            get: { controller.currentRotation },
-            set: { controller.setRotation($0) }
-        )
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Divider()
 
             HStack(alignment: .center, spacing: 12) {
@@ -33,20 +26,11 @@ struct DisplayRotationControls: View {
                 displayPicker
             }
 
-            HStack(alignment: .center, spacing: 12) {
-                Text("Rotation")
-
-                Spacer(minLength: 8)
-
-                Picker("Rotation", selection: rotationSelection) {
-                    ForEach(DisplayRotation.allCases) { rotation in
-                        Text(rotation.title).tag(rotation.rawValue)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize()
-            }
+            DisplayRotationSelector(
+                currentRotation: controller.currentRotation,
+                onSelect: controller.setRotation
+            )
+            .id(controller.selectedDisplayID)
 
             if let errorMessage = controller.errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.circle")
@@ -77,6 +61,186 @@ struct DisplayRotationControls: View {
                 .truncationMode(.middle)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+struct DisplayRotationSelector: View {
+    let currentRotation: Int
+    let onSelect: (Int) -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @State private var hoveredRotation: DisplayRotation?
+    @State private var requestedRotation: Int?
+
+    private let buttonHeight: CGFloat = 60
+    private let inset: CGFloat = 4
+    private let spacing: CGFloat = 4
+    private let cornerRadius: CGFloat = 10
+    private let slideDuration = 0.22
+
+    private var highlightedRotation: DisplayRotation? {
+        DisplayRotation(rawValue: requestedRotation ?? currentRotation)
+    }
+
+    private var highlightedIndex: Int {
+        highlightedRotation.flatMap { DisplayRotation.allCases.firstIndex(of: $0) } ?? 1
+    }
+
+    private var selectionAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: slideDuration)
+    }
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            ForEach(DisplayRotation.allCases) { rotation in
+                rotationButton(rotation)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: buttonHeight)
+        .background {
+            GeometryReader { geometry in
+                let count = CGFloat(DisplayRotation.allCases.count)
+                let buttonWidth = (geometry.size.width - spacing * (count - 1)) / count
+
+                // The highlight matches each full-width segment and remains alive as it slides.
+                selectionHighlight
+                    .frame(width: buttonWidth, height: buttonHeight)
+                    .offset(x: CGFloat(highlightedIndex) * (buttonWidth + spacing))
+                    .opacity(highlightedRotation == nil ? 0 : 1)
+                    .animation(selectionAnimation, value: highlightedRotation)
+                    .allowsHitTesting(false)
+            }
+        }
+        .padding(inset)
+        .background(
+            Color.primary.opacity(contrast == .increased ? 0.10 : 0.045),
+            in: RoundedRectangle(cornerRadius: cornerRadius + inset, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Display rotation")
+        .task(id: requestedRotation) {
+            guard let requestedRotation else { return }
+
+            // Screen reconfiguration can interrupt rendering, so finish the slide first.
+            if !reduceMotion {
+                do {
+                    try await Task.sleep(for: .seconds(slideDuration))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+
+            if requestedRotation != currentRotation {
+                onSelect(requestedRotation)
+            }
+            self.requestedRotation = nil
+        }
+        .onChange(of: currentRotation) { _ in
+            requestedRotation = nil
+        }
+        .onDisappear {
+            requestedRotation = nil
+        }
+    }
+
+    private func rotationButton(_ rotation: DisplayRotation) -> some View {
+        let isHighlighted = highlightedRotation == rotation
+
+        return Button {
+            guard highlightedRotation != rotation else { return }
+            requestedRotation = rotation.rawValue
+        } label: {
+            DisplayRotationIcon(rotation: rotation)
+                .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                .frame(width: 30, height: 34)
+                .accessibilityHidden(true)
+                .foregroundStyle(isHighlighted ? .primary : .secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: buttonHeight)
+                .background(
+                    hoveredRotation == rotation && !isHighlighted ? Color.primary.opacity(0.06) : .clear,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredRotation = hovering ? rotation : (hoveredRotation == rotation ? nil : hoveredRotation)
+        }
+        .help(rotation.accessibilityTitle)
+        .accessibilityLabel(rotation.accessibilityTitle)
+        .accessibilityAddTraits(currentRotation == rotation.rawValue ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private var selectionHighlight: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        if #available(macOS 26.0, *), !reduceTransparency {
+            shape
+                .fill(.clear)
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    if contrast == .increased {
+                        shape.strokeBorder(.primary, lineWidth: 1)
+                    }
+                }
+        } else {
+            shape
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay {
+                    shape.strokeBorder(Color.primary.opacity(contrast == .increased ? 0.8 : 0.12), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
+        }
+    }
+}
+
+private struct DisplayRotationIcon: Shape {
+    let rotation: DisplayRotation
+
+    func path(in rect: CGRect) -> Path {
+        let isPortrait = rotation != .landscape
+        let screen = isPortrait
+            ? CGRect(x: 10, y: 10, width: 16, height: 24)
+            : CGRect(x: 4, y: 10, width: 28, height: 18)
+        let footY: CGFloat = isPortrait ? 38 : 33
+
+        var path = Path()
+        path.addRoundedRect(in: screen, cornerSize: CGSize(width: 2, height: 2))
+        path.move(to: CGPoint(x: 18, y: screen.maxY))
+        path.addLine(to: CGPoint(x: 18, y: footY))
+        path.move(to: CGPoint(x: 13, y: footY))
+        path.addLine(to: CGPoint(x: 23, y: footY))
+
+        if isPortrait {
+            // A curved arrow above the portrait screen distinguishes the two directions.
+            let turnsRight = rotation == .portraitRight
+            let startX: CGFloat = turnsRight ? 7 : 29
+            let endX: CGFloat = turnsRight ? 29 : 7
+            path.move(to: CGPoint(x: startX, y: 8))
+            path.addCurve(
+                to: CGPoint(x: endX, y: 8),
+                control1: CGPoint(x: turnsRight ? 12 : 24, y: 0),
+                control2: CGPoint(x: turnsRight ? 24 : 12, y: 0)
+            )
+            path.addLines([
+                CGPoint(x: endX + (turnsRight ? -1 : 1), y: 3),
+                CGPoint(x: endX, y: 8),
+                CGPoint(x: endX + (turnsRight ? -5 : 5), y: 7)
+            ])
+        }
+
+        return path.applying(CGAffineTransform(
+            a: rect.width / 36, b: 0,
+            c: 0, d: rect.height / 40,
+            tx: rect.minX, ty: rect.minY
+        ))
     }
 }
 
@@ -175,19 +339,17 @@ struct RotationDisplay: Identifiable {
 }
 
 private enum DisplayRotation: Int, CaseIterable, Identifiable {
+    case portraitLeft = 270
     case landscape = 0
     case portraitRight = 90
-    case upsideDown = 180
-    case portraitLeft = 270
 
     var id: Int { rawValue }
 
-    var title: String {
+    var accessibilityTitle: String {
         switch self {
-        case .landscape: "Landscape · 0°"
-        case .portraitRight: "Portrait · 90° clockwise"
-        case .upsideDown: "Upside Down · 180°"
-        case .portraitLeft: "Portrait · 270° clockwise"
+        case .portraitLeft: "Rotate display left to portrait, 90° counterclockwise"
+        case .landscape: "Horizontal display, no rotation"
+        case .portraitRight: "Rotate display right to portrait, 90° clockwise"
         }
     }
 }
