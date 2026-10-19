@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 
 struct ContentView: View {
+    var showAbout: () -> Void = { NSApp.orderFrontStandardAboutPanel(nil) }
+
     @EnvironmentObject private var caffeinate: CoffeeCupController
     @StateObject private var displayRotation = DisplayRotationController.shared
     @StateObject private var catMode = CatModeController.shared
     @StateObject private var keyboardModifiers = KeyboardModifierController.shared
-    @State private var isQuitHovered = false
     @State private var confirmCatModeActivation = false
 
     var body: some View {
@@ -22,40 +23,44 @@ struct ContentView: View {
     }
 
     private var popupContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             header
 
-            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                toggleRow("Keep display awake", isOn: Binding(
+                    get: { caffeinate.isActive },
+                    set: { caffeinate.setActive($0) }
+                ))
 
-            keepDisplayAwakeRow
+                if let errorMessage = caffeinate.errorMessage {
+                    errorLabel(errorMessage)
+                }
 
-            if let errorMessage = caffeinate.errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                toggleRow("Cat Mode", isOn: Binding(
+                    get: { catMode.isActive },
+                    set: { enabled in
+                        if enabled {
+                            confirmCatModeActivation = true
+                        } else {
+                            catMode.setActive(false)
+                        }
+                    }
+                ))
+                .help("Blocks keyboard and pointer input. Press Control–Option–Command–Escape to exit.")
 
-            catModeRow
+                if let errorMessage = catMode.errorMessage {
+                    errorLabel(errorMessage)
+                }
 
-            if let errorMessage = catMode.errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let errorMessage = keyboardModifiers.errorMessage {
+                    errorLabel(errorMessage)
+                }
             }
 
             if displayRotation.hasDisplays {
+                Divider()
                 DisplayRotationControls(controller: displayRotation)
             }
-
-            if keyboardModifiers.hasKeyboards {
-                if !displayRotation.hasDisplays { Divider() }
-                KeyboardModifierControls(controller: keyboardModifiers)
-                Divider()
-            }
-
-            launchAtLoginRow
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -75,20 +80,11 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: caffeinate.isActive ? "sun.max.fill" : "moon.zzz.fill")
-                .font(.title2)
-                .foregroundStyle(caffeinate.isActive ? .orange : .secondary)
-                .frame(width: 28, height: 28)
+        HStack(spacing: 10) {
+            Text("CoffeeCup")
+                .font(.title3.weight(.semibold))
 
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("CoffeeCup")
-                    .font(.title3.weight(.semibold))
-
-                Text(appVersion)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
+            Spacer(minLength: 0)
 
             if let updateVersion = caffeinate.updateAvailableVersion {
                 Button {
@@ -103,98 +99,67 @@ struct ContentView: View {
                 .accessibilityLabel("Download CoffeeCup update, version \(updateVersion)")
             }
 
-            Spacer(minLength: 0)
-
-            Button("Quit") {
-                caffeinate.stop()
-                NSApplication.shared.terminate(nil)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(isQuitHovered ? .primary : .secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                isQuitHovered ? Color.primary.opacity(0.12) : .clear,
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .onHover { isHovered in
-                withAnimation(.easeOut(duration: 0.12)) {
-                    isQuitHovered = isHovered
-                }
-            }
+            settingsMenu
         }
     }
 
-    private var appVersion: String {
-        guard let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else {
-            return ""
-        }
-        return "v\(version)"
-    }
-
-    private var keepDisplayAwakeRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("Keep display awake")
-                .font(.body)
-
-            Spacer(minLength: 12)
-
-            Toggle("Keep display awake", isOn: Binding(
-                get: { caffeinate.isActive },
-                set: { caffeinate.setActive($0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .fixedSize()
-        }
-    }
-
-    private var launchAtLoginRow: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text("Launch at login")
-                .font(.body)
-
-            Spacer(minLength: 12)
-
+    private var settingsMenu: some View {
+        Menu {
             Toggle("Launch at login", isOn: Binding(
                 get: { caffeinate.launchesAtLogin },
                 set: { caffeinate.setLaunchAtLogin($0) }
             ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .fixedSize()
+
+            KeyboardModifierMenuItems(controller: keyboardModifiers)
+
+            Divider()
+
+            if caffeinate.updateAvailableVersion != nil {
+                Button("Download Update…") {
+                    caffeinate.downloadUpdateDMG()
+                }
+            }
+
+            Button("About CoffeeCup", action: showAbout)
+
+            Divider()
+
+            Button("Quit CoffeeCup") {
+                NSApp.terminate(nil)
+            }
+        } label: {
+            Image(systemName: "gearshape")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Settings and app actions")
+        .accessibilityLabel("CoffeeCup settings")
     }
 
-    private var catModeRow: some View {
+    private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            Text("🐱 Cat Mode")
+            Text(title)
                 .font(.body)
-
-            if catMode.isActive {
-                Text("⌃⌥⌘Esc")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Control Option Command Escape to unlock")
-            }
 
             Spacer(minLength: 12)
 
-            Toggle("Cat Mode", isOn: Binding(
-                get: { catMode.isActive },
-                set: { enabled in
-                    if enabled {
-                        confirmCatModeActivation = true
-                    } else {
-                        catMode.setActive(false)
-                    }
-                }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .fixedSize()
-            .help("Blocks keyboard and pointer input. Press Control–Option–Command–Escape to exit.")
+            Toggle(title, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .fixedSize()
         }
+    }
+
+    private func errorLabel(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

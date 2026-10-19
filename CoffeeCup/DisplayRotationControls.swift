@@ -15,11 +15,11 @@ struct DisplayRotationControls: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Divider()
-
-            HStack(alignment: .center, spacing: 12) {
-                Label("Display", systemImage: "display")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Display")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
 
                 Spacer(minLength: 8)
 
@@ -38,8 +38,6 @@ struct DisplayRotationControls: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Divider()
         }
     }
 
@@ -53,13 +51,9 @@ struct DisplayRotationControls: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .fixedSize()
-        } else if let display = controller.selectedDisplay {
-            Text(display.name)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(.secondary)
+            .controlSize(.small)
+            .frame(maxWidth: 146, alignment: .trailing)
+            .accessibilityLabel("Select display")
         }
     }
 }

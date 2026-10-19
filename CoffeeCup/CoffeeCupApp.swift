@@ -18,7 +18,9 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         KeyboardModifierController.shared.start()
 
         let hostingController = NSHostingController(
-            rootView: ContentView().environmentObject(controller)
+            rootView: ContentView(showAbout: { [weak self] in
+                self?.showAbout()
+            }).environmentObject(controller)
         )
         hostingController.sizingOptions = [.preferredContentSize]
 
@@ -73,6 +75,16 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
     func popoverDidClose(_ notification: Notification) {
         statusItem?.button?.state = .off
+    }
+
+    private func showAbout() {
+        popover.performClose(nil)
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        NSApp.orderFrontStandardAboutPanel(nil)
     }
 
     @objc private func togglePopover(_ sender: Any?) {

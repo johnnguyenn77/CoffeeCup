@@ -24,18 +24,24 @@ CoffeeCup checks GitHub for a newer release on first launch when needed, then ev
 4. Look for the coffee-cup icon in the macOS menu bar.
 5. Click the icon and switch on **Keep display awake**.
 
-The app is configured as a menu-bar accessory, so it does not open a normal Dock window. Use **Quit** in the popover to close it.
+The app is configured as a menu-bar accessory, so it does not open a normal Dock window.
+The popover keeps **Keep display awake** and **Cat Mode** within reach. **Display**
+rotation controls appear only when an external display is connected, with a display
+picker when more than one is connected. Open the gear menu for **Launch at login**,
+external keyboard settings, **About CoffeeCup** (including the installed version),
+and **Quit CoffeeCup**.
 
 ## External keyboards and KVM switches
 
-Keep your external keyboard in **Windows mode**, then select it in CoffeeCup’s
-**Keyboard** section and enable **Swap Alt / Windows**. This exchanges left and
+Keep your external keyboard in **Windows mode**, then open CoffeeCup’s gear menu
+and enable **Swap Alt / Windows**. If multiple external keyboards are connected,
+choose the one to configure in the **Keyboard** submenu first. This exchanges left and
 right Alt/Option with Windows/Command, giving those keys their usual Mac positions.
 Control, Shift, the function row, and the Mac’s built-in keyboard are unchanged.
 
-The section appears when a supported USB or Bluetooth keyboard is connected,
-including keyboards already attached when CoffeeCup starts. The entire section
-hides when the last external keyboard disconnects; the built-in keyboard or a
+Keyboard settings appear when a supported USB or Bluetooth keyboard is connected,
+including keyboards already attached when CoffeeCup starts. These menu items
+hide when the last external keyboard disconnects; the built-in keyboard or a
 mouse alone does not show the swap option. USB devices whose
 primary HID interface is a mouse are excluded, even if they expose extra keyboard
 interfaces for macro buttons.
@@ -59,7 +65,7 @@ For a local install, use a signed Release build:
 4. In the Organizer, choose **Distribute App → Copy App**, then save `CoffeeCup.app`.
 5. Drag `CoffeeCup.app` into `/Applications` and open it from there.
 
-The popover includes a **Launch at login** toggle. Turn it on after installing the app. If macOS asks for approval, open **System Settings → General → Login Items** and allow CoffeeCup. The app must be code-signed for macOS to register it as a login item.
+The gear menu includes a **Launch at login** option. Turn it on after installing the app. If macOS asks for approval, open **System Settings → General → Login Items** and allow CoffeeCup. The app must be code-signed for macOS to register it as a login item.
 
 CoffeeCup saves your Launch at login preference outside the app bundle and restores the login item when the app starts after an update. With an ad-hoc signed build, macOS may still require approval after replacing the app; Developer ID signing and notarization provide the smoothest update experience.
 
