@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var caffeinate: CoffeeCupController
     @StateObject private var displayRotation = DisplayRotationController.shared
     @StateObject private var catMode = CatModeController.shared
+    @StateObject private var keyboardModifiers = KeyboardModifierController.shared
     @State private var isQuitHovered = false
     @State private var confirmCatModeActivation = false
 
@@ -48,6 +49,12 @@ struct ContentView: View {
                 DisplayRotationControls(controller: displayRotation)
             }
 
+            if keyboardModifiers.hasKeyboards {
+                if !displayRotation.hasDisplays { Divider() }
+                KeyboardModifierControls(controller: keyboardModifiers)
+                Divider()
+            }
+
             launchAtLoginRow
         }
         .padding(.horizontal, 16)
@@ -55,6 +62,7 @@ struct ContentView: View {
         .frame(width: 260, alignment: .topLeading)
         .onAppear {
             caffeinate.refreshLoginItemStatus()
+            keyboardModifiers.refresh()
         }
         .alert("Turn On Cat Mode?", isPresented: $confirmCatModeActivation) {
             Button("Cancel", role: .cancel) { }

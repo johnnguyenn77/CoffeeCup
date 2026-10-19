@@ -7,6 +7,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
     private var activityObserver: AnyCancellable?
+    private var catModeObserver: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         CatModeController.shared.restoreFunctionKeyModeAfterUnexpectedQuit()
@@ -14,6 +15,7 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         let controller = CoffeeCupController.shared
         controller.startWeeklyUpdateChecks()
         DisplayRotationController.shared.refreshDisplays()
+        KeyboardModifierController.shared.start()
 
         let hostingController = NSHostingController(
             rootView: ContentView().environmentObject(controller)
@@ -37,6 +39,16 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
                 self?.updateStatusIcon(isActive: isActive)
             }
 
+        catModeObserver = CatModeController.shared.$isActive
+            .removeDuplicates()
+            .filter { $0 }
+            // Let the confirmation alert dismiss before closing its containing popover.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard CatModeController.shared.isActive else { return }
+                self?.popover.performClose(nil)
+            }
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(displayConfigurationDidChange),
@@ -52,8 +64,10 @@ final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
             object: nil
         )
         activityObserver = nil
+        catModeObserver = nil
         popover.close()
         CatModeController.shared.stop()
+        KeyboardModifierController.shared.stop()
         CoffeeCupController.shared.stop()
     }
 

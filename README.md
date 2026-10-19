@@ -26,6 +26,29 @@ CoffeeCup checks GitHub for a newer release on first launch when needed, then ev
 
 The app is configured as a menu-bar accessory, so it does not open a normal Dock window. Use **Quit** in the popover to close it.
 
+## External keyboards and KVM switches
+
+Keep your external keyboard in **Windows mode**, then select it in CoffeeCup’s
+**Keyboard** section and enable **Swap Alt / Windows**. This exchanges left and
+right Alt/Option with Windows/Command, giving those keys their usual Mac positions.
+Control, Shift, the function row, and the Mac’s built-in keyboard are unchanged.
+
+The section appears when a supported USB or Bluetooth keyboard is connected,
+including keyboards already attached when CoffeeCup starts. The entire section
+hides when the last external keyboard disconnects; the built-in keyboard or a
+mouse alone does not show the swap option. USB devices whose
+primary HID interface is a mouse are excluded, even if they expose extra keyboard
+interfaces for macro buttons.
+CoffeeCup remembers the setting per device and reapplies it after reconnects or
+wake while the app is running. Without a device serial number, the preference is
+tied to its USB port, so use the same KVM/port or select and enable it again.
+
+Turning the swap off or quitting CoffeeCup restores the previous mappings, while
+preserving unrelated key remaps. If another app changes the same modifiers,
+CoffeeCup stops swapping instead of repeatedly overriding it. Run only one copy of
+CoffeeCup when using this feature; it does not change the keyboard’s firmware or
+your Windows PC’s settings.
+
 ## Install as an app
 
 For a local install, use a signed Release build:
@@ -82,6 +105,14 @@ xcodebuild -project CoffeeCup.xcodeproj -scheme CoffeeCup -configuration Debug -
 ```
 
 The app uses `/usr/bin/caffeinate`, which is built into macOS. App Sandbox is disabled because the utility launches this system command directly.
+
+Run the keyboard mapping and reconnect regression checks with:
+
+```sh
+bash scripts/test-keyboard-modifiers.sh
+```
+
+These checks use simulated devices and do not change your live keyboard mappings.
 
 ## GitHub Releases
 
