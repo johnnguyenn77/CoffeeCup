@@ -75,7 +75,8 @@ final class CoffeeCupController: ObservableObject {
 
         let caffeinate = Process()
         caffeinate.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        caffeinate.arguments = ["-d"]
+        // Keep display-only behavior, but let caffeinate clean up even after a crash/force quit.
+        caffeinate.arguments = Self.caffeinateArguments(for: ProcessInfo.processInfo.processIdentifier)
         caffeinate.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.process?.isRunning != true else { return }
@@ -100,6 +101,10 @@ final class CoffeeCupController: ObservableObject {
         process?.terminate()
         process = nil
         isActive = false
+    }
+
+    static func caffeinateArguments(for pid: Int32) -> [String] {
+        ["-d", "-w", String(pid)]
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

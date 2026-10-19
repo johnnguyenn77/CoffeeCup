@@ -27,7 +27,7 @@ struct ContentView: View {
             header
 
             VStack(alignment: .leading, spacing: 12) {
-                toggleRow("Keep display awake", isOn: Binding(
+                CoffeeCupToggleRow(title: "Keep display awake", isOn: Binding(
                     get: { caffeinate.isActive },
                     set: { caffeinate.setActive($0) }
                 ))
@@ -36,7 +36,7 @@ struct ContentView: View {
                     errorLabel(errorMessage)
                 }
 
-                toggleRow("Cat Mode", isOn: Binding(
+                CoffeeCupToggleRow(title: "Cat Mode", isOn: Binding(
                     get: { catMode.isActive },
                     set: { enabled in
                         if enabled {
@@ -94,64 +94,14 @@ struct ContentView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.blue)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .help("Download CoffeeCup \(updateVersion). Open the DMG and replace CoffeeCup in Applications.")
                 .accessibilityLabel("Download CoffeeCup update, version \(updateVersion)")
             }
 
-            settingsMenu
-        }
-    }
-
-    private var settingsMenu: some View {
-        Menu {
-            Toggle("Launch at login", isOn: Binding(
-                get: { caffeinate.launchesAtLogin },
-                set: { caffeinate.setLaunchAtLogin($0) }
-            ))
-
-            KeyboardModifierMenuItems(controller: keyboardModifiers)
-
-            Divider()
-
-            if caffeinate.updateAvailableVersion != nil {
-                Button("Download Update…") {
-                    caffeinate.downloadUpdateDMG()
-                }
-            }
-
-            Button("About CoffeeCup", action: showAbout)
-
-            Divider()
-
-            Button("Quit CoffeeCup") {
-                NSApp.terminate(nil)
-            }
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Settings and app actions")
-        .accessibilityLabel("CoffeeCup settings")
-    }
-
-    private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .font(.body)
-
-            Spacer(minLength: 12)
-
-            Toggle(title, isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .fixedSize()
+            CoffeeCupSettingsButton(caffeinate: caffeinate, keyboards: keyboardModifiers,
+                                    showAbout: showAbout)
+                .frame(width: 28, height: 28)
         }
     }
 

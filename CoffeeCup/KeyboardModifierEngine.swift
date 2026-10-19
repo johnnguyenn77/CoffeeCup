@@ -2,14 +2,19 @@ import Foundation
 
 /// Owns only four source usages on explicitly enabled external keyboard services.
 /// The persisted journal makes repeated launches idempotent and preserves the pre-swap values.
-@MainActor
-final class KeyboardModifierEngine {
+nonisolated final class KeyboardModifierEngine {
     private let provider: KeyboardHIDProviding
     private let store: KeyboardModifierStoring
     private(set) var preferences: KeyboardModifierPreferences
     private(set) var keyboards: [ExternalKeyboard] = []
     private(set) var appliedKeyboardIDs: Set<String> = []
     private var failedKeyboardIDs: Set<String> = []
+    private var connectedServiceIDs: Set<UInt64> = []
+
+    var needsPeriodicVerification: Bool {
+        keyboards.contains { preferences.enabledKeyboardIDs.contains($0.id) }
+            || preferences.leases.values.contains { connectedServiceIDs.contains($0.serviceID) }
+    }
 
     init(provider: KeyboardHIDProviding, store: KeyboardModifierStoring, bootSessionID: String) throws {
         self.provider = provider
@@ -25,8 +30,10 @@ final class KeyboardModifierEngine {
     }
 
     @discardableResult
-    func refresh() throws -> [ExternalKeyboard] {
+    func refresh(invalidateDiscovery: Bool = false) throws -> [ExternalKeyboard] {
+        if invalidateDiscovery { provider.invalidateDiscoveryCache() }
         let connected = try provider.keyboards()
+        connectedServiceIDs = Set(connected.flatMap(\.serviceIDs))
         keyboards = connected.filter(\.isSelectable)
         appliedKeyboardIDs = []
         // Keep missing services' leases until the next boot. A temporarily incomplete enumeration
@@ -49,7 +56,12 @@ final class KeyboardModifierEngine {
                 }
                 if preferences.enabledKeyboardIDs.contains(keyboard.id), !failedKeyboardIDs.contains(keyboard.id) {
                     do { try apply(keyboard, explicitlyEnabled: false) }
-                    catch { throw rollBackFailedEnable(keyboard) ?? error }
+                    catch {
+                        // KVM transitions can remove a service halfway through a refresh. Undo
+                        // partial writes, but retain the saved opt-in and retry on the next scan.
+                        let retry = (error as? KeyboardModifierError)?.canRetryAfterReconnect == true
+                        throw rollBackFailedEnable(keyboard, disablePreference: !retry) ?? error
+                    }
                     appliedKeyboardIDs.insert(keyboard.id)
                 } else {
                     try restore(keyboard)
@@ -66,22 +78,23 @@ final class KeyboardModifierEngine {
     }
 
     func setEnabled(_ enabled: Bool, for id: String) throws {
+        if !enabled {
+            try update { $0.enabledKeyboardIDs.remove(id) }
+            appliedKeyboardIDs.remove(id)
+            failedKeyboardIDs.remove(id)
+            if let keyboard = keyboards.first(where: { $0.id == id }) { try restore(keyboard) }
+            return
+        }
         guard let keyboard = keyboards.first(where: { $0.id == id }) else {
             throw KeyboardModifierError.deviceUnavailable
         }
         failedKeyboardIDs.remove(id)
-        if enabled {
-            try update { $0.enabledKeyboardIDs.insert(id) }
-            do {
-                try apply(keyboard, explicitlyEnabled: true)
-                appliedKeyboardIDs.insert(id)
-            } catch {
-                throw rollBackFailedEnable(keyboard) ?? error
-            }
-        } else {
-            try update { $0.enabledKeyboardIDs.remove(id) }
-            appliedKeyboardIDs.remove(id)
-            try restore(keyboard)
+        try update { $0.enabledKeyboardIDs.insert(id) }
+        do {
+            try apply(keyboard, explicitlyEnabled: true)
+            appliedKeyboardIDs.insert(id)
+        } catch {
+            throw rollBackFailedEnable(keyboard) ?? error
         }
     }
 
@@ -106,7 +119,8 @@ final class KeyboardModifierEngine {
                 guard lease.keyboardID == keyboard.id else { throw KeyboardModifierError.deviceUnavailable }
                 if WindowsKeyboardMapping.isApplied(to: current) { continue }
                 let modifiedSources = current.filter { WindowsKeyboardMapping.sources.contains($0.source) }
-                guard explicitlyEnabled || modifiedSources.isEmpty || current == lease.original else {
+                guard explicitlyEnabled || modifiedSources.isEmpty
+                        || ModifierKeyMapping.equivalent(current, lease.original) else {
                     throw KeyboardModifierError.changedElsewhere
                 }
             } else {
@@ -127,21 +141,25 @@ final class KeyboardModifierEngine {
             do {
                 let current = try provider.mapping(for: serviceID)
                 let restored = WindowsKeyboardMapping.restoring(original: lease.original, current: current)
-                if restored != current { try provider.setMapping(restored, for: serviceID) }
+                if !ModifierKeyMapping.equivalent(restored, current) {
+                    try provider.setMapping(restored, for: serviceID)
+                }
                 try update { $0.leases.removeValue(forKey: key) }
             } catch { if firstError == nil { firstError = error } }
         }
         if let firstError { throw firstError }
     }
 
-    private func rollBackFailedEnable(_ keyboard: ExternalKeyboard) -> Error? {
+    private func rollBackFailedEnable(_ keyboard: ExternalKeyboard, disablePreference: Bool = true) -> Error? {
         // Roll back every interface, including when a reconnect fails partway through.
         // Stop retrying until the user opts in again, rather than fighting another remapper.
-        failedKeyboardIDs.insert(keyboard.id)
+        if disablePreference { failedKeyboardIDs.insert(keyboard.id) }
         appliedKeyboardIDs.remove(keyboard.id)
         var cleanupError: Error?
-        do { try update { $0.enabledKeyboardIDs.remove(keyboard.id) } }
-        catch { cleanupError = error }
+        if disablePreference {
+            do { try update { $0.enabledKeyboardIDs.remove(keyboard.id) } }
+            catch { cleanupError = error }
+        }
         do { try restore(keyboard) }
         catch { cleanupError = error }
         return cleanupError
@@ -150,6 +168,7 @@ final class KeyboardModifierEngine {
     private func update(_ change: (inout KeyboardModifierPreferences) -> Void) throws {
         var updated = preferences
         change(&updated)
+        guard updated != preferences else { return }
         try store.save(updated)
         preferences = updated
     }

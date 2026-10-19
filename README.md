@@ -44,10 +44,14 @@ including keyboards already attached when CoffeeCup starts. These menu items
 hide when the last external keyboard disconnects; the built-in keyboard or a
 mouse alone does not show the swap option. USB devices whose
 primary HID interface is a mouse are excluded, even if they expose extra keyboard
-interfaces for macro buttons.
+interfaces for macro buttons. Detection uses the physical USB device rather than
+the helper event service; ambiguous pointer devices without keyboard evidence are
+also excluded.
 CoffeeCup remembers the setting per device and reapplies it after reconnects or
 wake while the app is running. Without a device serial number, the preference is
 tied to its USB port, so use the same KVM/port or select and enable it again.
+Temporary reconnect failures keep the saved preference and retry; a conflicting
+mapping from another app still stops the swap for safety.
 
 Turning the swap off or quitting CoffeeCup restores the previous mappings, while
 preserving unrelated key remaps. If another app changes the same modifiers,
@@ -119,6 +123,42 @@ bash scripts/test-keyboard-modifiers.sh
 ```
 
 These checks use simulated devices and do not change your live keyboard mappings.
+They also check native menu visibility, checkmarks, and first-click acceptance.
+The suite additionally checks Cat Mode's filtering and background run-loop lifecycle
+without installing an input blocker or requesting Accessibility. A short native
+`caffeinate` test verifies owner-exit cleanup using a temporary test process.
+
+Keyboard discovery and preference recovery run on one serial utility queue, not the
+UI thread. Plug/unplug and wake notifications trigger fresh discovery. USB device
+classification is cached between topology changes, and bursts of refresh requests
+are coalesced. The five-second KVM verification timer runs only while a connected
+device has an enabled swap or a live mapping needing restoration; idle unmanaged
+devices have no polling timer. Cat Mode's event thread exists only while enabled
+and is released on exit; its unlock path does not wait for the UI thread.
+
+To measure native discovery without changing device mappings:
+
+```sh
+bash scripts/test-keyboard-modifiers.sh --benchmark-discovery
+```
+
+The benchmark compares repeated full USB classification with cached classification
+and verifies that both produce identical device lists. The release workflow runs
+the regression tests before building or uploading a DMG.
+
+To build the isolated accessory-app interaction harness:
+
+```sh
+bash scripts/build-interaction-tests.sh
+open "build/InteractionTests/CoffeeCup Input Tests.app"
+```
+
+Its test-window row, keyboard menu, and rotation selector use simulated state, so
+you can test clicks and hot-plug scenarios without changing your devices. **Open
+real CoffeeCup popover** opens the production popover in that separate test app;
+its controls affect real hardware if enabled. The physical-modifier readout observes
+only modifier presses delivered to the test app, not text or input in other apps.
+Quit the test app when finished; the installed CoffeeCup app is not replaced.
 
 ## GitHub Releases
 

@@ -4,10 +4,17 @@ import IOKit
 import IOKit.hid
 import IOKit.hidsystem
 
-@MainActor
-final class KeyboardHIDService: KeyboardHIDProviding {
+/// Confined to the keyboard worker's serial queue; it never reads input events.
+nonisolated final class KeyboardHIDService: KeyboardHIDProviding {
     private let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
     private var services: [UInt64: IOHIDServiceClient] = [:]
+    private var cachedUSBTopology: Set<UInt64> = []
+    private var cachedUSBRoles: [String: ExternalKeyboard.USBInputRole]?
+    private(set) var usbClassificationScans = 0
+
+    func invalidateDiscoveryCache() {
+        cachedUSBRoles = nil
+    }
 
     func keyboards() throws -> [ExternalKeyboard] {
         guard let all = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] else {
@@ -15,8 +22,16 @@ final class KeyboardHIDService: KeyboardHIDProviding {
         }
         var grouped: [String: ExternalKeyboard] = [:]
         var available: [UInt64: IOHIDServiceClient] = [:]
+        let topology = Set(all.compactMap {
+            (IOHIDServiceClientGetRegistryID($0) as? NSNumber)?.uint64Value
+        })
+        if cachedUSBRoles == nil || topology != cachedUSBTopology {
+            cachedUSBRoles = primaryUSBInputRoles()
+            cachedUSBTopology = topology
+        }
+        let usbRoles = cachedUSBRoles ?? [:]
         let pointerIDs = Set(all.filter { IOHIDServiceClientConformsTo($0, 1, 2) != 0 }
-            .compactMap { identity(of: $0)?.id })
+            .compactMap { identity(of: $0)?.connectionID })
 
         for service in all {
             guard IOHIDServiceClientConformsTo(service, 1, 6) != 0,
@@ -29,12 +44,15 @@ final class KeyboardHIDService: KeyboardHIDProviding {
                 keyboard.serviceIDs.sort()
                 grouped[identity.id] = keyboard
             } else {
+                let name = property(service, "Product") as? String ?? "External Keyboard"
+                let hasPointerInterface = pointerIDs.contains(identity.connectionID)
                 grouped[identity.id] = ExternalKeyboard(id: identity.id,
-                    name: property(service, "Product") as? String ?? "External Keyboard",
+                    name: name,
                     vendorID: identity.vendor, productID: identity.product, locationID: identity.location,
-                    transport: identity.transport, hasPointerInterface: pointerIDs.contains(identity.id),
-                    serviceIDs: [serviceID], isSelectable: identity.transport != "USB"
-                        || !primaryUSBInterfaceIsMouse(serviceID: serviceID))
+                    transport: identity.transport, hasPointerInterface: hasPointerInterface,
+                    serviceIDs: [serviceID], isSelectable: ExternalKeyboard.shouldOfferModifierSwap(
+                        name: name, hasPointerInterface: hasPointerInterface,
+                        usbRole: usbRoles[identity.connectionID] ?? .unknown))
             }
         }
         services = available
@@ -61,7 +79,7 @@ final class KeyboardHIDService: KeyboardHIDProviding {
         let value = mapping.map { [ModifierKeyMapping.sourceKey: NSNumber(value: $0.source),
                                   ModifierKeyMapping.destinationKey: NSNumber(value: $0.destination)] }
         guard IOHIDServiceClientSetProperty(service, "UserKeyMapping" as CFString, value as CFArray),
-              try self.mapping(for: serviceID) == mapping else {
+              try ModifierKeyMapping.equivalent(self.mapping(for: serviceID), mapping) else {
             throw KeyboardModifierError.mappingNotApplied
         }
     }
@@ -86,48 +104,59 @@ final class KeyboardHIDService: KeyboardHIDProviding {
         IOHIDServiceClientCopyProperty(service, key as CFString)
     }
 
-    private func primaryUSBInterfaceIsMouse(serviceID: UInt64) -> Bool {
-        var entry = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(serviceID))
-        guard entry != 0 else { return false }
-        defer { IOObjectRelease(entry) }
-
-        // Inspect the physical USB device, not just the helper keyboard interface.
-        // No devices are opened or seized, and no input events are read.
-        for _ in 0..<16 {
-            if IOObjectConformsTo(entry, "IOUSBHostDevice") != 0
-                || IOObjectConformsTo(entry, "IOUSBDevice") != 0 {
-                var iterator: io_iterator_t = 0
-                guard IORegistryEntryGetChildIterator(entry, kIOServicePlane, &iterator) == KERN_SUCCESS else {
-                    return false
+    private func primaryUSBInputRoles() -> [String: ExternalKeyboard.USBInputRole] {
+        usbClassificationScans += 1
+        var roles: [String: ExternalKeyboard.USBInputRole] = [:]
+        // Event services are virtual on some macOS/DriverKit versions and cannot reliably be
+        // walked back to a USB parent. Match physical devices by VID/PID/port instead, once per scan.
+        for className in ["IOUSBHostDevice", "IOUSBDevice"] {
+            var devices: io_iterator_t = 0
+            guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(className), &devices)
+                == KERN_SUCCESS else { continue }
+            defer { IOObjectRelease(devices) }
+            while true {
+                let device = IOIteratorNext(devices)
+                guard device != 0 else { break }
+                defer { IOObjectRelease(device) }
+                guard let vendor = registryNumber(device, "idVendor"),
+                      let product = registryNumber(device, "idProduct"),
+                      let location = registryNumber(device, "locationID") else { continue }
+                let connectionID = usbConnectionID(vendor: vendor, product: product, location: UInt64(location))
+                var children: io_iterator_t = 0
+                guard IORegistryEntryGetChildIterator(device, kIOServicePlane, &children) == KERN_SUCCESS else {
+                    continue
                 }
-                defer { IOObjectRelease(iterator) }
+                defer { IOObjectRelease(children) }
                 while true {
-                    let child = IOIteratorNext(iterator)
+                    let child = IOIteratorNext(children)
                     guard child != 0 else { break }
                     defer { IOObjectRelease(child) }
-                    func number(_ key: String) -> UInt32? {
-                        (IORegistryEntryCreateCFProperty(child, key as CFString,
-                            kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber)?.uint32Value
-                    }
-                    guard number("bInterfaceNumber") == 0,
-                          number("bAlternateSetting") ?? 0 == 0 else { continue }
-                    return ExternalKeyboard.isPrimaryUSBMouse(interfaceClass: number("bInterfaceClass"),
-                        subclass: number("bInterfaceSubClass"), protocolCode: number("bInterfaceProtocol"))
+                    guard IOObjectConformsTo(child, "IOUSBHostInterface") != 0
+                            || IOObjectConformsTo(child, "IOUSBInterface") != 0,
+                          registryNumber(child, "bInterfaceNumber") == 0,
+                          (registryNumber(child, "bAlternateSetting") ?? 0) == 0 else { continue }
+                    let role = ExternalKeyboard.usbInputRole(
+                        interfaceClass: registryNumber(child, "bInterfaceClass"),
+                        subclass: registryNumber(child, "bInterfaceSubClass"),
+                        protocolCode: registryNumber(child, "bInterfaceProtocol"))
+                    if role != .unknown { roles[connectionID] = role }
                 }
-                return false
             }
-            var parent: io_registry_entry_t = 0
-            guard IORegistryEntryGetParentEntry(entry, kIOServicePlane, &parent) == KERN_SUCCESS else {
-                return false
-            }
-            IOObjectRelease(entry)
-            entry = parent
         }
-        return false
+        return roles
+    }
+
+    private func registryNumber(_ entry: io_registry_entry_t, _ key: String) -> UInt32? {
+        (IORegistryEntryCreateCFProperty(entry, key as CFString,
+            kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber)?.uint32Value
+    }
+
+    private func usbConnectionID(vendor: UInt32, product: UInt32, location: UInt64) -> String {
+        "USB:\(vendor):\(product):\(location)"
     }
 
     private func identity(of service: IOHIDServiceClient)
-        -> (id: String, vendor: UInt32, product: UInt32, location: UInt64, transport: String)? {
+        -> (id: String, connectionID: String, vendor: UInt32, product: UInt32, location: UInt64, transport: String)? {
         guard let vendor = property(service, "VendorID") as? NSNumber,
               let product = property(service, "ProductID") as? NSNumber,
               let location = property(service, "LocationID") as? NSNumber,
@@ -136,7 +165,10 @@ final class KeyboardHIDService: KeyboardHIDProviding {
         let id = ExternalKeyboard.persistentID(vendorID: vendor.uint32Value, productID: product.uint32Value,
             transport: transport, serialNumber: property(service, "SerialNumber") as? String,
             locationID: location.uint64Value)
-        return (id, vendor.uint32Value, product.uint32Value, location.uint64Value, transport)
+        let connectionID = transport.caseInsensitiveCompare("USB") == .orderedSame
+            ? usbConnectionID(vendor: vendor.uint32Value, product: product.uint32Value, location: location.uint64Value)
+            : id
+        return (id, connectionID, vendor.uint32Value, product.uint32Value, location.uint64Value, transport)
     }
 
     static func bootSessionID() throws -> String {

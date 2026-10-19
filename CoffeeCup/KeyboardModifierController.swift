@@ -14,24 +14,41 @@ final class KeyboardModifierController: ObservableObject {
     var selectedKeyboard: ExternalKeyboard? { keyboards.first { $0.id == selectedKeyboardID } }
     var hasKeyboards: Bool { !keyboards.isEmpty }
 
-    private let provider = KeyboardHIDService()
-    private var engine: KeyboardModifierEngine?
+    private let worker: KeyboardModifierWorker
+    private let monitorsDevices: Bool
     private var manager: IOHIDManager?
     private var refreshWork: DispatchWorkItem?
     private var timer: Timer?
     private var wakeObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
     private var isRunning = false
+    private var isSleeping = false
+    private var generation = 0
+    private var pendingOperations = 0
+    private var refreshPending = false
+    private var refreshAgain = false
+    private var refreshCompletions: [() -> Void] = []
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var needsPeriodicVerification = false
 
     init() {
-        do {
-            engine = try KeyboardModifierEngine(provider: provider, store: KeyboardModifierDefaultsStore(),
-                                                bootSessionID: KeyboardHIDService.bootSessionID())
-        } catch { errorMessage = error.localizedDescription }
+        worker = KeyboardModifierWorker()
+        monitorsDevices = true
+    }
+
+    init(engine: KeyboardModifierEngine) {
+        worker = KeyboardModifierWorker(engine: engine)
+        // Simulated controllers use the same worker, but never observe real devices or poll.
+        monitorsDevices = false
     }
 
     func start() {
         guard !isRunning else { return }
         isRunning = true
+        isSleeping = false
+        generation += 1
+        refresh(invalidateDiscovery: true) // Includes devices connected before launch.
+        guard monitorsDevices else { return }
         // Discovery only: do not open/seize keyboards or subscribe to key events.
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOHIDManagerOptions.independentDevices.rawValue)
         let callback: IOHIDDeviceCallback = { context, _, _, _ in
@@ -48,37 +65,61 @@ final class KeyboardModifierController: ObservableObject {
         self.manager = manager
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in MainActor.assumeIsolated { self?.scheduleRefresh() } }
-        // Some KVMs keep an emulated keyboard connected; verify its service state periodically too.
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
-        }
-        refresh() // Handles keyboards already connected before CoffeeCup launches.
+        ) { [weak self] _ in MainActor.assumeIsolated {
+            self?.isSleeping = false
+            self?.scheduleRefresh()
+        } }
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in MainActor.assumeIsolated {
+            self?.isSleeping = true
+            self?.updateVerificationTimer()
+        } }
+        // One debounced retry lets USB metadata settle; it is not an idle polling loop.
         scheduleRefresh()
     }
 
-    func refresh() {
-        guard isRunning, let engine else { return }
-        do { try engine.refresh(); errorMessage = nil }
-        catch { errorMessage = error.localizedDescription }
-        publishState()
+    func refresh(invalidateDiscovery: Bool = false, completion: (() -> Void)? = nil) {
+        guard isRunning else { return }
+        if let completion { refreshCompletions.append(completion) }
+        if refreshPending {
+            refreshAgain = refreshAgain || invalidateDiscovery
+            return
+        }
+        refreshPending = true
+        submit(.refresh(invalidateDiscovery: invalidateDiscovery)) { [weak self] in
+            guard let self else { return }
+            self.refreshPending = false
+            if self.refreshAgain {
+                self.refreshAgain = false
+                self.refresh(invalidateDiscovery: true)
+            } else {
+                let completions = self.refreshCompletions
+                self.refreshCompletions.removeAll()
+                completions.forEach { $0() }
+            }
+        }
+    }
+
+    /// Used by deterministic tests to await snapshots, not by normal UI interaction.
+    func waitUntilIdle() async {
+        guard pendingOperations > 0 else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
     }
 
     func selectKeyboard(_ id: String) {
-        do { try engine?.selectKeyboard(id); errorMessage = nil }
-        catch { errorMessage = error.localizedDescription }
-        publishState()
+        submit(.select(id))
     }
 
-    func setSwapEnabled(_ enabled: Bool) {
-        guard let engine, let selectedKeyboardID else { return }
-        do { try engine.setEnabled(enabled, for: selectedKeyboardID); errorMessage = nil }
-        catch { errorMessage = error.localizedDescription }
-        publishState()
+    func setSwapEnabled(_ enabled: Bool, for keyboardID: String? = nil) {
+        guard let targetID = keyboardID ?? selectedKeyboardID else { return }
+        submit(.setEnabled(enabled, targetID))
     }
 
     func stop() {
+        guard isRunning else { return }
         isRunning = false
+        generation += 1 // Ignore snapshots queued before shutdown/restart.
         refreshWork?.cancel()
         refreshWork = nil
         timer?.invalidate()
@@ -91,23 +132,67 @@ final class KeyboardModifierController: ObservableObject {
         manager = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         wakeObserver = nil
-        do { try engine?.restoreBeforeQuit() }
-        catch { errorMessage = error.localizedDescription }
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        sleepObserver = nil
+        refreshPending = false
+        refreshAgain = false
+        refreshCompletions.removeAll()
+        publishState(worker.restoreBeforeQuit())
         swapsModifiers = false
+        pendingOperations = 0
+        finishIdleWaiters()
     }
 
     private func scheduleRefresh() {
         guard isRunning else { return }
         refreshWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.refresh() }
+        let work = DispatchWorkItem { [weak self] in self?.refresh(invalidateDiscovery: true) }
         refreshWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
-    private func publishState() {
-        guard let engine else { return }
-        if keyboards != engine.keyboards { keyboards = engine.keyboards }
-        selectedKeyboardID = engine.preferences.selectedKeyboardID
-        swapsModifiers = selectedKeyboardID.map { engine.appliedKeyboardIDs.contains($0) } ?? false
+    private func submit(_ operation: KeyboardModifierWorker.Operation, completion: (() -> Void)? = nil) {
+        guard isRunning else { return }
+        let submittedGeneration = generation
+        pendingOperations += 1
+        worker.perform(operation) { [weak self] state in
+            guard let self, self.isRunning, self.generation == submittedGeneration else { return }
+            self.publishState(state)
+            self.pendingOperations -= 1
+            completion?()
+            self.finishIdleWaiters()
+        }
+    }
+
+    private func publishState(_ state: KeyboardModifierSnapshot) {
+        if keyboards != state.keyboards { keyboards = state.keyboards }
+        if selectedKeyboardID != state.selectedKeyboardID { selectedKeyboardID = state.selectedKeyboardID }
+        if swapsModifiers != state.swapsModifiers { swapsModifiers = state.swapsModifiers }
+        if errorMessage != state.errorMessage { errorMessage = state.errorMessage }
+        needsPeriodicVerification = state.needsPeriodicVerification
+        updateVerificationTimer()
+    }
+
+    private func updateVerificationTimer() {
+        guard monitorsDevices, isRunning, !isSleeping, needsPeriodicVerification else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        // KVMs may reset a mapping without a hot-plug event. Preserve the five-second
+        // fallback ONLY for managed connected devices; ordinary idle mode has no timer.
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        timer.tolerance = 0.5
+        self.timer = timer
+    }
+
+    private func finishIdleWaiters() {
+        guard pendingOperations == 0 else { return }
+        let waiters = idleWaiters
+        idleWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }

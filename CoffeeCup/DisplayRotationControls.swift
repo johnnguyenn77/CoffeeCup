@@ -66,7 +66,6 @@ struct DisplayRotationSelector: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var hoveredRotation: DisplayRotation?
-    @State private var requestedRotation: Int?
 
     private let buttonHeight: CGFloat = 60
     private let inset: CGFloat = 4
@@ -75,7 +74,7 @@ struct DisplayRotationSelector: View {
     private let slideDuration = 0.22
 
     private var highlightedRotation: DisplayRotation? {
-        DisplayRotation(rawValue: requestedRotation ?? currentRotation)
+        DisplayRotation(rawValue: currentRotation)
     }
 
     private var highlightedIndex: Int {
@@ -116,30 +115,6 @@ struct DisplayRotationSelector: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Display rotation")
-        .task(id: requestedRotation) {
-            guard let requestedRotation else { return }
-
-            // Screen reconfiguration can interrupt rendering, so finish the slide first.
-            if !reduceMotion {
-                do {
-                    try await Task.sleep(for: .seconds(slideDuration))
-                } catch {
-                    return
-                }
-            }
-            guard !Task.isCancelled else { return }
-
-            if requestedRotation != currentRotation {
-                onSelect(requestedRotation)
-            }
-            self.requestedRotation = nil
-        }
-        .onChange(of: currentRotation) { _ in
-            requestedRotation = nil
-        }
-        .onDisappear {
-            requestedRotation = nil
-        }
     }
 
     private func rotationButton(_ rotation: DisplayRotation) -> some View {
@@ -147,7 +122,8 @@ struct DisplayRotationSelector: View {
 
         return Button {
             guard highlightedRotation != rotation else { return }
-            requestedRotation = rotation.rawValue
+            // Input must not depend on an animation task surviving a screen reconfiguration.
+            onSelect(rotation.rawValue)
         } label: {
             DisplayRotationIcon(rotation: rotation)
                 .stroke(style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
@@ -162,7 +138,7 @@ struct DisplayRotationSelector: View {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .onHover { hovering in
             hoveredRotation = hovering ? rotation : (hoveredRotation == rotation ? nil : hoveredRotation)
         }
@@ -275,18 +251,12 @@ final class DisplayRotationController: ObservableObject {
             return RotationDisplay(id: displayID, name: screenName ?? fallbackName)
         }
 
-        displays = connectedDisplays
-
-        if let selectedDisplayID,
-           connectedDisplays.contains(where: { $0.id == selectedDisplayID }) {
-            currentRotation = Int(CGDisplayRotation(selectedDisplayID).rounded())
-        } else if let firstDisplay = connectedDisplays.first {
-            selectedDisplayID = firstDisplay.id
-            currentRotation = Int(CGDisplayRotation(firstDisplay.id).rounded())
-        } else {
-            selectedDisplayID = nil
-            currentRotation = 0
-        }
+        let selection = connectedDisplays.first(where: { $0.id == selectedDisplayID })?.id
+            ?? connectedDisplays.first?.id
+        let rotation = selection.map { Int(CGDisplayRotation($0).rounded()) } ?? 0
+        if displays != connectedDisplays { displays = connectedDisplays }
+        if selectedDisplayID != selection { selectedDisplayID = selection }
+        if currentRotation != rotation { currentRotation = rotation }
     }
 
     private func getOnlineDisplayIDs() -> [CGDirectDisplayID]? {
@@ -327,7 +297,7 @@ final class DisplayRotationController: ObservableObject {
     }
 }
 
-struct RotationDisplay: Identifiable {
+struct RotationDisplay: Identifiable, Equatable {
     let id: CGDirectDisplayID
     let name: String
 }

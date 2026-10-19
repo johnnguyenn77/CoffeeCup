@@ -14,9 +14,7 @@ final class CatModeController: ObservableObject {
     @Published private(set) var isActive = false
     @Published private(set) var errorMessage: String?
 
-    private var eventTap: CFMachPort?
-    private var eventTapSource: CFRunLoopSource?
-    private var eventTapContext: CatModeEventTapContext?
+    private var inputSession: CatModeInputSession?
 
     func restoreFunctionKeyModeAfterUnexpectedQuit() {
         guard UserDefaults.standard.bool(forKey: Self.functionKeyModeRestorePendingKey) else { return }
@@ -32,19 +30,9 @@ final class CatModeController: ObservableObject {
     }
 
     func stop() {
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-        }
-        if let eventTapSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
-        }
-        if let eventTap {
-            CFMachPortInvalidate(eventTap)
-        }
-
-        eventTap = nil
-        eventTapSource = nil
-        eventTapContext = nil
+        let session = inputSession
+        inputSession = nil
+        session?.stop()
         isActive = false
 
         if restoreSavedFunctionKeyMode() {
@@ -65,57 +53,19 @@ final class CatModeController: ObservableObject {
             return
         }
 
-        let context = CatModeEventTapContext(
-            requestExit: { [weak self] in
-                self?.stop()
-            },
-            reportTapDisabled: { [weak self] in
-                guard let self else { return }
-                self.stop()
-                if self.errorMessage == nil {
-                    self.errorMessage = "Cat Mode stopped because macOS disabled its input blocker."
-                }
+        guard let session = CatModeInputSession.make(onStopped: { [weak self] id, reason in
+            guard let self, self.inputSession?.id == id else { return }
+            self.stop()
+            if reason == .disabled, self.errorMessage == nil {
+                self.errorMessage = "Cat Mode stopped because macOS disabled its input blocker."
             }
-        )
-
-        // Swallow normal keyboard events, including standard F1–F12 input.
-        // Brightness and media controls may instead arrive as NX_SYSDEFINED,
-        // so include that event type and filter its known key codes below.
-        let eventTypes: [CGEventType] = [
-            .keyDown, .keyUp, .flagsChanged,
-            .mouseMoved,
-            .leftMouseDown, .leftMouseUp, .leftMouseDragged,
-            .rightMouseDown, .rightMouseUp, .rightMouseDragged,
-            .otherMouseDown, .otherMouseUp, .otherMouseDragged,
-            .scrollWheel, .tabletPointer, .tabletProximity
-        ]
-        let eventMask = eventTypes.reduce(CGEventMask(0)) { mask, type in
-            mask | (CGEventMask(1) << type.rawValue)
-        } | (CGEventMask(1) << CatModeSystemDefinedKey.eventTypeValue)
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: catModeEventTapCallback,
-            userInfo: Unmanaged.passUnretained(context).toOpaque()
-        ) else {
+        }) else {
             failToStart("Could not start Cat Mode. Check CoffeeCup’s Accessibility permission and try again.")
             return
         }
 
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            CFMachPortInvalidate(tap)
-            failToStart("Could not start Cat Mode’s input monitor.")
-            return
-        }
-
-        eventTap = tap
-        eventTapSource = source
-        eventTapContext = context
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        inputSession = session
+        session.start()
         isActive = true
         errorMessage = nil
     }
@@ -216,57 +166,7 @@ private enum FunctionKeyModeSetting {
     }
 }
 
-private final class CatModeEventTapContext {
-    private let lock = NSLock()
-    private var exitRequested = false
-    private let requestExit: () -> Void
-    private let reportTapDisabled: () -> Void
-
-    init(requestExit: @escaping () -> Void, reportTapDisabled: @escaping () -> Void) {
-        self.requestExit = requestExit
-        self.reportTapDisabled = reportTapDisabled
-    }
-
-    func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        if type.rawValue == CatModeSystemDefinedKey.eventTypeValue {
-            return CatModeSystemDefinedKey.shouldSuppress(event)
-                ? nil
-                : Unmanaged.passUnretained(event)
-        }
-
-        if type == .flagsChanged {
-            // Let modifier transitions through so the unlock chord doesn't leave
-            // macOS believing a modifier key is still held after Cat Mode ends.
-            return Unmanaged.passUnretained(event)
-        }
-
-        let unlockModifiers: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
-        if type == .keyDown,
-           event.getIntegerValueField(.keyboardEventKeycode) == 53,
-           event.flags.contains(unlockModifiers) {
-            lock.lock()
-            let shouldRequestExit = !exitRequested
-            exitRequested = true
-            lock.unlock()
-
-            if shouldRequestExit {
-                // Keep the tap installed briefly to swallow Escape's key-up too.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [requestExit] in
-                    requestExit()
-                }
-            }
-            return nil
-        }
-
-        return nil
-    }
-
-    func handleDisabledTap() {
-        reportTapDisabled()
-    }
-}
-
-private enum CatModeSystemDefinedKey {
+nonisolated enum CatModeSystemDefinedKey {
     // NSEventTypeSystemDefined / NX_SYSDEFINED is 14. Its auxiliary-control
     // subtype (8) packs the NX_KEYTYPE value into the upper 16 bits of data1.
     static let eventTypeValue: UInt32 = 14
@@ -285,26 +185,14 @@ private enum CatModeSystemDefinedKey {
     ]
 
     static func shouldSuppress(_ event: CGEvent) -> Bool {
-        guard let systemEvent = NSEvent(cgEvent: event),
-              systemEvent.subtype.rawValue == auxiliaryControlButtonsSubtype else {
-            return false
+        // The dedicated CF run loop doesn't get AppKit's per-event autorelease pool.
+        return autoreleasepool {
+            guard let systemEvent = NSEvent(cgEvent: event),
+                  systemEvent.subtype.rawValue == auxiliaryControlButtonsSubtype else {
+                return false
+            }
+            let keyType = Int((systemEvent.data1 >> 16) & 0xFFFF)
+            return suppressedKeyTypes.contains(keyType)
         }
-
-        let keyType = Int((systemEvent.data1 >> 16) & 0xFFFF)
-        return suppressedKeyTypes.contains(keyType)
     }
-}
-
-private let catModeEventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
-    guard let userInfo else { return Unmanaged.passUnretained(event) }
-    let context = Unmanaged<CatModeEventTapContext>.fromOpaque(userInfo).takeUnretainedValue()
-
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        DispatchQueue.main.async { [context] in
-            context.handleDisabledTap()
-        }
-        return Unmanaged.passUnretained(event)
-    }
-
-    return context.handle(type: type, event: event)
 }

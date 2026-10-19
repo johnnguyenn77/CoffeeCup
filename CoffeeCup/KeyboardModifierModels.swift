@@ -1,14 +1,24 @@
 import Foundation
 
-struct ModifierKeyMapping: Codable, Equatable {
+nonisolated struct ModifierKeyMapping: Codable, Equatable, Sendable {
     let source: UInt64
     let destination: UInt64
 
     static let sourceKey = "HIDKeyboardModifierMappingSrc"
     static let destinationKey = "HIDKeyboardModifierMappingDst"
+
+    static func equivalent(_ lhs: [Self], _ rhs: [Self]) -> Bool {
+        if lhs == rhs { return true }
+        guard lhs.count == rhs.count else { return false }
+        func ordered(_ mappings: [Self]) -> [Self] {
+            mappings.sorted { $0.source == $1.source
+                ? $0.destination < $1.destination : $0.source < $1.source }
+        }
+        return ordered(lhs) == ordered(rhs)
+    }
 }
 
-enum WindowsKeyboardMapping {
+nonisolated enum WindowsKeyboardMapping {
     // USB HID keyboard usages: left/right Alt (Option) and GUI (Command).
     // Control, Shift, Caps Lock, Fn, and the function row are deliberately unchanged.
     static let swap: [ModifierKeyMapping] = [
@@ -28,7 +38,7 @@ enum WindowsKeyboardMapping {
     }
 
     static func restoring(original: [ModifierKeyMapping], current: [ModifierKeyMapping]) -> [ModifierKeyMapping] {
-        if current == applying(to: original) { return original }
+        if ModifierKeyMapping.equivalent(current, applying(to: original)) { return original }
         // Restore only keys still set to CoffeeCup's values. Never overwrite a later edit by another app.
         let ownedSources = Set(swap.filter { expected in
             current.filter { $0.source == expected.source } == [expected]
@@ -38,7 +48,7 @@ enum WindowsKeyboardMapping {
     }
 }
 
-struct ExternalKeyboard: Identifiable, Equatable {
+nonisolated struct ExternalKeyboard: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let vendorID: UInt32
@@ -49,10 +59,35 @@ struct ExternalKeyboard: Identifiable, Equatable {
     var serviceIDs: [UInt64]
     var isSelectable = true
 
+    enum USBInputRole: Sendable { case keyboard, pointer, unknown }
+
+    static func usbInputRole(interfaceClass: UInt32?, subclass: UInt32?, protocolCode: UInt32?) -> USBInputRole {
+        guard interfaceClass == 3, subclass == 1 else { return .unknown }
+        switch protocolCode {
+        case 1: return .keyboard
+        case 2: return .pointer
+        default: return .unknown
+        }
+    }
+
+    static func shouldOfferModifierSwap(name: String, hasPointerInterface: Bool,
+                                       usbRole: USBInputRole) -> Bool {
+        switch usbRole {
+        case .pointer: return false
+        case .keyboard: return true
+        case .unknown:
+            let name = name.lowercased()
+            if ["mouse", "trackpad", "trackball"].contains(where: name.contains) { return false }
+            // Ambiguous pointer devices often advertise a helper keyboard for macro buttons.
+            // Without physical keyboard evidence, don't offer to remap that helper interface.
+            return !hasPointerInterface || name.contains("keyboard")
+        }
+    }
+
     static func isPrimaryUSBMouse(interfaceClass: UInt32?, subclass: UInt32?, protocolCode: UInt32?) -> Bool {
         // USB HID boot-mouse protocol on the device's first interface identifies its
         // primary role, unlike extra keyboard reports used for programmable buttons.
-        interfaceClass == 3 && subclass == 1 && protocolCode == 2
+        usbInputRole(interfaceClass: interfaceClass, subclass: subclass, protocolCode: protocolCode) == .pointer
     }
 
     static func preferredBefore(_ lhs: ExternalKeyboard, _ rhs: ExternalKeyboard) -> Bool {
@@ -87,20 +122,20 @@ struct ExternalKeyboard: Identifiable, Equatable {
     }
 }
 
-struct KeyboardMappingLease: Codable, Equatable {
+nonisolated struct KeyboardMappingLease: Codable, Equatable, Sendable {
     let keyboardID: String
     let serviceID: UInt64
     let original: [ModifierKeyMapping]
 }
 
-struct KeyboardModifierPreferences: Codable, Equatable {
+nonisolated struct KeyboardModifierPreferences: Codable, Equatable, Sendable {
     var selectedKeyboardID: String?
     var enabledKeyboardIDs: Set<String> = []
     var bootSessionID: String
     var leases: [String: KeyboardMappingLease] = [:]
 }
 
-enum KeyboardModifierError: LocalizedError {
+nonisolated enum KeyboardModifierError: LocalizedError {
     case unsupportedMapping
     case deviceUnavailable
     case mappingNotApplied
@@ -108,6 +143,13 @@ enum KeyboardModifierError: LocalizedError {
     case cannotSave
     case invalidPreferences
     case unavailableBootSession
+
+    var canRetryAfterReconnect: Bool {
+        switch self {
+        case .deviceUnavailable, .mappingNotApplied: return true
+        default: return false
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -129,21 +171,23 @@ enum KeyboardModifierError: LocalizedError {
     }
 }
 
-@MainActor
-protocol KeyboardHIDProviding {
+nonisolated protocol KeyboardHIDProviding {
     func keyboards() throws -> [ExternalKeyboard]
+    func invalidateDiscoveryCache()
     func mapping(for serviceID: UInt64) throws -> [ModifierKeyMapping]
     func setMapping(_ mapping: [ModifierKeyMapping], for serviceID: UInt64) throws
 }
 
-@MainActor
-protocol KeyboardModifierStoring {
+extension KeyboardHIDProviding {
+    func invalidateDiscoveryCache() { }
+}
+
+nonisolated protocol KeyboardModifierStoring {
     func load() throws -> KeyboardModifierPreferences?
     func save(_ preferences: KeyboardModifierPreferences) throws
 }
 
-@MainActor
-final class KeyboardModifierDefaultsStore: KeyboardModifierStoring {
+nonisolated final class KeyboardModifierDefaultsStore: KeyboardModifierStoring {
     private static let key = "CoffeeCup.externalKeyboardModifiers.v1"
     private let defaults: UserDefaults
 

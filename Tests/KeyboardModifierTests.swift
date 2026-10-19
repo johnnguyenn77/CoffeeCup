@@ -1,7 +1,7 @@
 import Foundation
+import Combine
 
-@MainActor
-final class MemoryKeyboardStore: KeyboardModifierStoring {
+nonisolated final class MemoryKeyboardStore: KeyboardModifierStoring {
     var value: KeyboardModifierPreferences?
     var failSave = false
     var failLoad = false
@@ -19,14 +19,26 @@ final class MemoryKeyboardStore: KeyboardModifierStoring {
     }
 }
 
-@MainActor
-final class FakeKeyboardHID: KeyboardHIDProviding {
-    var connected: [ExternalKeyboard] = []
+nonisolated final class FakeKeyboardHID: KeyboardHIDProviding {
+    private let connectionLock = NSLock()
+    private var connectedDevices: [ExternalKeyboard] = []
+    var connected: [ExternalKeyboard] {
+        get { connectionLock.lock(); defer { connectionLock.unlock() }; return connectedDevices }
+        set { connectionLock.lock(); defer { connectionLock.unlock() }; connectedDevices = newValue }
+    }
     var values: [UInt64: [ModifierKeyMapping]] = [:]
     var writes: [UInt64] = []
     var failNextWrite: UInt64?
+    var scanCount = 0
+    var cacheInvalidations = 0
+    var scannedOnMainThread = false
 
-    func keyboards() throws -> [ExternalKeyboard] { connected }
+    func keyboards() throws -> [ExternalKeyboard] {
+        scanCount += 1
+        scannedOnMainThread = scannedOnMainThread || Thread.isMainThread
+        return connected
+    }
+    func invalidateDiscoveryCache() { cacheInvalidations += 1 }
     func mapping(for serviceID: UInt64) throws -> [ModifierKeyMapping] {
         guard connected.contains(where: { $0.serviceIDs.contains(serviceID) }) else {
             throw KeyboardModifierError.deviceUnavailable
@@ -40,9 +52,32 @@ final class FakeKeyboardHID: KeyboardHIDProviding {
     }
 }
 
+#if !COFFEECUP_INTERACTION_TESTS
 @main
 enum KeyboardModifierTests {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
+        if CommandLine.arguments.contains("--benchmark-discovery") {
+            let result = try await Task.detached(priority: .utility) {
+                let provider = KeyboardHIDService()
+                var baseline: [ExternalKeyboard] = []
+                let start = DispatchTime.now().uptimeNanoseconds
+                for _ in 0..<100 {
+                    provider.invalidateDiscoveryCache()
+                    baseline = try provider.keyboards()
+                }
+                let uncached = DispatchTime.now().uptimeNanoseconds - start
+                let scansBefore = provider.usbClassificationScans
+                let cachedStart = DispatchTime.now().uptimeNanoseconds
+                for _ in 0..<100 {
+                    let current = try provider.keyboards()
+                    precondition(current == baseline, "Caching must preserve device filtering")
+                }
+                let cached = DispatchTime.now().uptimeNanoseconds - cachedStart
+                return "Read-only discovery benchmark, 100 scans each: uncached=\(Double(uncached) / 1_000_000)ms, cached=\(Double(cached) / 1_000_000)ms; additional USB classifications=\(provider.usbClassificationScans - scansBefore); device lists identical."
+            }.value
+            print(result)
+            return
+        }
         if CommandLine.arguments.contains("--inspect") {
             let provider = KeyboardHIDService()
             for keyboard in try provider.keyboards() {
@@ -87,16 +122,42 @@ enum KeyboardModifierTests {
               "Protocol values on non-boot interfaces are not misinterpreted")
         check(!ExternalKeyboard.isPrimaryUSBMouse(interfaceClass: nil, subclass: nil, protocolCode: nil),
               "Unavailable USB metadata does not hide a legitimate keyboard")
+        check(ExternalKeyboard.usbInputRole(interfaceClass: 3, subclass: 1, protocolCode: 1) == .keyboard,
+              "The physical primary keyboard interface is positive keyboard evidence")
+        check(!ExternalKeyboard.shouldOfferModifierSwap(name: "Razer Basilisk V3 Pro", hasPointerInterface: true,
+                                                       usbRole: .unknown),
+              "A mouse helper stays hidden even when USB metadata is temporarily unavailable")
+        check(!ExternalKeyboard.shouldOfferModifierSwap(name: "Mouse Keyboard Macro", hasPointerInterface: true,
+                                                       usbRole: .pointer),
+              "Physical mouse evidence wins over a misleading keyboard product name")
+        check(ExternalKeyboard.shouldOfferModifierSwap(name: "Gaming Device", hasPointerInterface: true,
+                                                      usbRole: .keyboard),
+              "A real USB keyboard with extra pointer reports remains selectable")
+        check(ExternalKeyboard.shouldOfferModifierSwap(name: "Wireless Gaming Keyboard", hasPointerInterface: true,
+                                                      usbRole: .unknown),
+              "A named keyboard is still usable during a partial USB enumeration")
+        check(!ExternalKeyboard.shouldOfferModifierSwap(name: "Bluetooth Mouse", hasPointerInterface: false,
+                                                       usbRole: .unknown),
+              "A named mouse does not depend on its pointer service having appeared yet")
+        check(ExternalKeyboard.shouldOfferModifierSwap(name: "Generic Input", hasPointerInterface: false,
+                                                      usbRole: .unknown),
+              "A keyboard-only generic device is not excluded for lacking a marketing name")
         let unrelated = ModifierKeyMapping(source: 0x700000039, destination: 0x700000029)
         let customAlt = ModifierKeyMapping(source: 0x7000000E2, destination: 0x7000000E0)
         let original = [customAlt, unrelated]
         let applied = WindowsKeyboardMapping.applying(to: original)
+        check(ModifierKeyMapping.equivalent(applied, Array(applied.reversed())),
+              "OS read-back verification tolerates reordered mapping entries")
+        check(!ModifierKeyMapping.equivalent(applied, applied + [unrelated]),
+              "Read-back verification still detects unexpected duplicate entries")
         check(WindowsKeyboardMapping.swap.count == 4, "Both left and right modifier pairs")
         check(WindowsKeyboardMapping.isApplied(to: applied), "Swap contains all four expected directions")
         check(applied.contains(unrelated), "Unrelated Caps Lock mapping is preserved")
         check(!applied.contains(customAlt), "Explicit swap overrides a conflicting source while enabled")
         check(WindowsKeyboardMapping.restoring(original: original, current: applied) == original,
               "Untouched mapping is restored exactly, including original order")
+        check(WindowsKeyboardMapping.restoring(original: original, current: Array(applied.reversed())) == original,
+              "Reordered OS mappings restore the exact original without unnecessary writes")
         check(WindowsKeyboardMapping.applying(to: applied) == applied, "Repeated enable does not invert or duplicate")
         let laterUnrelated = ModifierKeyMapping(source: 0x700000004, destination: 0x700000005)
         check(WindowsKeyboardMapping.restoring(original: original, current: applied + [laterUnrelated]).contains(laterUnrelated),
@@ -132,12 +193,23 @@ enum KeyboardModifierTests {
         try engine.refresh()
         check(engine.keyboards.count == 2 && provider.writes.isEmpty, "Detect already-connected keyboards without changing them")
         check(engine.preferences.selectedKeyboardID == id, "First external keyboard is selected but not enabled")
+        check(!engine.needsPeriodicVerification, "Unmanaged keyboards do not need a polling timer")
+        let savesBeforeUnchangedSelection = store.saveCount
+        for _ in 0..<12 { try engine.selectKeyboard(id) }
+        check(store.saveCount == savesBeforeUnchangedSelection,
+              "Repeated unchanged selection does not rewrite the preference journal")
         try engine.setEnabled(true, for: id)
         check(provider.values[11] == applied && provider.values[12] == WindowsKeyboardMapping.swap,
               "All interfaces of only the selected keyboard are mapped")
         check(provider.values[21] == [unrelated], "Unselected keyboard remains unchanged")
         check(store.value?.leases.count == 2, "Originals are journaled per service before write")
         check(engine.appliedKeyboardIDs == [id], "Report enabled only after all interfaces succeed")
+        check(engine.needsPeriodicVerification, "An enabled connected KVM keyboard retains periodic verification")
+        provider.values[11] = Array(original.reversed())
+        try engine.refresh()
+        check(engine.preferences.enabledKeyboardIDs.contains(id)
+              && WindowsKeyboardMapping.isApplied(to: provider.values[11] ?? []),
+              "A reordered original map after KVM reset is not mistaken for another remapper")
         let writesBeforeRefresh = provider.writes.count
         try engine.refresh()
         check(provider.writes.count == writesBeforeRefresh, "Periodic verification does not repeatedly rewrite")
@@ -147,12 +219,14 @@ enum KeyboardModifierTests {
         try engine.setEnabled(false, for: id)
         check(provider.values[11] == original && provider.values[12] == [], "Disable restores both original interfaces")
         check(engine.preferences.leases.isEmpty, "Completed restoration clears its journal")
+        check(!engine.needsPeriodicVerification, "Disabling the last swap removes idle polling")
 
         try engine.setEnabled(true, for: id)
         provider.connected = []
         try engine.refresh()
         check(engine.keyboards.isEmpty && engine.preferences.enabledKeyboardIDs.contains(id), "Disconnect hides controls, retaining the opt-in")
         check(!engine.preferences.leases.isEmpty, "Temporary incomplete enumeration does not discard recovery snapshots")
+        check(!engine.needsPeriodicVerification, "A disconnected keyboard sleeps until hot-plug/wake discovery")
         var reconnected = keyboard
         reconnected.serviceIDs = [31, 32]
         provider.connected = [reconnected, other]
@@ -218,7 +292,21 @@ enum KeyboardModifierTests {
         catch { checks += 1 }
         check(provider.values[31] == beforeReconnect && provider.values[32] == [],
               "Failed reconnect restores the first interface baseline without modifying the failed interface")
-        check(!failureEngine.preferences.enabledKeyboardIDs.contains(id), "Failed reconnect leaves no partial swap enabled")
+        check(!failureEngine.appliedKeyboardIDs.contains(id), "Failed reconnect reports no partial swap as active")
+        check(failureEngine.preferences.enabledKeyboardIDs.contains(id), "Transient reconnect failure retains the saved preference")
+        try failureEngine.refresh()
+        check(WindowsKeyboardMapping.isApplied(to: provider.values[31] ?? [])
+              && WindowsKeyboardMapping.isApplied(to: provider.values[32] ?? []),
+              "The next scan reapplies both interfaces after a transient failure")
+        provider.connected = []
+        try failureEngine.refresh()
+        try failureEngine.setEnabled(false, for: id)
+        check(!failureEngine.preferences.enabledKeyboardIDs.contains(id),
+              "A stale menu can disable a saved swap after the keyboard disappears")
+        provider.connected = [reconnected, other]
+        try failureEngine.refresh()
+        check(!WindowsKeyboardMapping.isApplied(to: provider.values[31] ?? []),
+              "A swap disabled while disconnected stays off when the keyboard returns")
 
         var hiddenMouse = gamingMouse
         hiddenMouse.isSelectable = false
@@ -269,19 +357,82 @@ enum KeyboardModifierTests {
         check(visibilityEngine.keyboards.map(\.id) == [gamingKeyboard.id], "Reconnecting a keyboard restores the section")
         check(visibilityProvider.writes.isEmpty, "Detection and visibility changes do not apply any unsolicited mappings")
 
+        let controllerProvider = FakeKeyboardHID()
+        controllerProvider.connected = [keyboard, other]
+        let controllerEngine = try KeyboardModifierEngine(provider: controllerProvider,
+            store: MemoryKeyboardStore(), bootSessionID: "boot-B")
+        let controller = KeyboardModifierController(engine: controllerEngine)
+        controller.start()
+        defer { controller.stop() }
+        await controller.waitUntilIdle()
+        check(!controllerProvider.scannedOnMainThread, "Hardware scans execute off the UI thread")
+        check(controllerProvider.cacheInvalidations == 1, "Startup explicitly refreshes physical USB metadata")
+        var publications = 0
+        let observer = controller.objectWillChange.sink { publications += 1 }
+        for _ in 0..<12 { controller.refresh() }
+        await controller.waitUntilIdle()
+        check(controllerProvider.scanCount == 2, "A burst of twelve refresh requests needs only one additional scan")
+        check(controllerProvider.cacheInvalidations == 1, "Ordinary verification keeps the USB classification cache")
+        let beforeHotplugBurst = controllerProvider.scanCount
+        controller.refresh()
+        for _ in 0..<12 { controller.refresh(invalidateDiscovery: true) }
+        await controller.waitUntilIdle()
+        check(controllerProvider.scanCount == beforeHotplugBurst + 2,
+              "A hot-plug burst during a scan schedules only one fresh follow-up")
+        check(controllerProvider.cacheInvalidations == 2, "Coalescing never drops a requested topology refresh")
+        check(publications == 0, "Unchanged periodic scans do not rebuild controls or menus")
+        controller.setSwapEnabled(true, for: id)
+        await controller.waitUntilIdle()
+        check(controller.swapsModifiers && controller.errorMessage == nil,
+              "The menu reports success only after the selected keyboard is mapped")
+        publications = 0
+        controller.refresh()
+        await controller.waitUntilIdle()
+        check(publications == 0, "Verification of an already-applied swap does not churn UI state")
+        controller.setSwapEnabled(false, for: id)
+        await controller.waitUntilIdle()
+        controllerProvider.connected = [other]
+        controller.setSwapEnabled(true, for: id)
+        await controller.waitUntilIdle()
+        check(controller.errorMessage != nil && !WindowsKeyboardMapping.isApplied(to: controllerProvider.values[21] ?? []),
+              "A stale menu never enables a different keyboard after a disconnect")
+        controllerProvider.connected = [keyboard, other]
+        controller.refresh()
+        controller.selectKeyboard(id)
+        await controller.waitUntilIdle()
+        check(controller.selectedKeyboardID == id && controller.errorMessage == nil,
+              "A later valid selection clears the disconnect error")
+        controller.setSwapEnabled(true, for: id)
+        controller.refresh()
+        controller.stop()
+        check(!WindowsKeyboardMapping.isApplied(to: controllerProvider.values[11] ?? []),
+              "Quit drains queued work and restores mappings before returning")
+        controller.start()
+        await controller.waitUntilIdle()
+        check(controller.swapsModifiers && controller.errorMessage == nil,
+              "Old queued snapshots cannot overwrite a restarted controller")
+        controller.setSwapEnabled(false, for: id)
+        await controller.waitUntilIdle()
+        controller.refresh(completion: { controller.stop() })
+        await controller.waitUntilIdle()
+        check(!controller.swapsModifiers, "A menu completion may stop the controller without leaving pending work")
+        withExtendedLifetime(observer) {}
+
         let invalidStore = MemoryKeyboardStore()
         invalidStore.failLoad = true
         do {
             _ = try KeyboardModifierEngine(provider: provider, store: invalidStore, bootSessionID: "boot-B")
             preconditionFailure("Unreadable recovery state must fail closed")
         } catch { checks += 1 }
-        print("PASS: \(checks) external-keyboard modifier checks")
+        checks += try await NativeControlTests.run()
+        checks += try await ResourceUsageTests.run()
+        print("PASS: \(checks) keyboard and native-control checks")
     }
 
     @MainActor private static func verifyLiveSwap(id: String) throws {
         let provider = KeyboardHIDService()
         let connected = try provider.keyboards()
-        guard let target = connected.first(where: { $0.id == id }) else {
+        guard let target = connected.first(where: { $0.id == id && $0.isSelectable }) else {
             throw KeyboardModifierError.deviceUnavailable
         }
         var originals: [UInt64: [ModifierKeyMapping]] = [:]
@@ -295,23 +446,28 @@ enum KeyboardModifierTests {
         // Always attempt rollback before exiting this explicitly requested live hardware check.
         defer { try? engine.restoreBeforeQuit() }
         try engine.setEnabled(true, for: target.id)
+        let verifier = KeyboardHIDService()
+        _ = try verifier.keyboards()
         for service in target.serviceIDs {
-            let mapping = try provider.mapping(for: service)
+            let mapping = try verifier.mapping(for: service)
             guard WindowsKeyboardMapping.isApplied(to: mapping) else { throw LiveCheckError.verificationFailed }
         }
         for keyboard in connected where keyboard.id != id {
             for service in keyboard.serviceIDs {
-                let mapping = try provider.mapping(for: service)
+                let mapping = try verifier.mapping(for: service)
                 guard mapping == originals[service] else { throw LiveCheckError.verificationFailed }
             }
         }
         try engine.setEnabled(false, for: target.id)
+        let restoredVerifier = KeyboardHIDService()
+        _ = try restoredVerifier.keyboards()
         for (service, baseline) in originals {
-            let mapping = try provider.mapping(for: service)
-            guard mapping == baseline else { throw LiveCheckError.verificationFailed }
+            let mapping = try restoredVerifier.mapping(for: service)
+            guard ModifierKeyMapping.equivalent(mapping, baseline) else { throw LiveCheckError.verificationFailed }
         }
         print("PASS: live swap and exact restoration on \(target.name), \(target.serviceIDs.count) interfaces; other external devices unchanged")
     }
 
     private enum LiveCheckError: Error { case verificationFailed }
 }
+#endif

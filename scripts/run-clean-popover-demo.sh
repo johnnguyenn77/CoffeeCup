@@ -22,15 +22,17 @@ xcrun swiftc -swift-version 5 -parse-as-library \
 "$output_dir/StateTests"
 if [[ "${1:-}" == "--test" ]]; then exit 0; fi
 
-mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources" "$output_dir/AppIcon.iconset"
+mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 xcrun swiftc -swift-version 5 -parse-as-library -O \
     -target "$(uname -m)-apple-macosx13.0" \
     "$source_dir/DemoState.swift" "$source_dir/DemoView.swift" "$source_dir/DemoApp.swift" \
     "$project_root/CoffeeCup/DisplayRotationControls.swift" \
     -o "$app_path/Contents/MacOS/CleanPopoverDemo"
 cp "$source_dir/Info.plist" "$app_path/Contents/Info.plist"
-cp "$project_root/CoffeeCup/Assets.xcassets/AppIcon.appiconset/"*.png "$output_dir/AppIcon.iconset/"
-iconutil -c icns -o "$app_path/Contents/Resources/AppIcon.icns" "$output_dir/AppIcon.iconset"
+xcrun actool "$project_root/CoffeeCup/AppIcon.icon" \
+    --compile "$app_path/Contents/Resources" --platform macosx --target-device mac \
+    --minimum-deployment-target 13.0 --app-icon AppIcon \
+    --output-partial-info-plist "$output_dir/AppIcon-Info.plist" >/dev/null
 codesign --force --sign - "$app_path"
 echo "Built: $app_path"
 if [[ "${1:-}" != "--build-only" ]]; then open "$app_path"; fi
