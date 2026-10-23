@@ -16,8 +16,14 @@ final class KeyboardModifierController: ObservableObject {
 
     private let worker: KeyboardModifierWorker
     private let monitorsDevices: Bool
+    private let scheduleRefreshWork: (TimeInterval, DispatchWorkItem) -> Void
+    private static let recoveryDelays: [TimeInterval] = [0.35, 1, 2]
     private var manager: IOHIDManager?
     private var refreshWork: DispatchWorkItem?
+    private var recoveryGeneration = 0
+    private var recoveryAttempt = 0
+    private var isRecovering = false
+    private var hasRetriedCurrentFailure = false
     private var timer: Timer?
     private var wakeObserver: NSObjectProtocol?
     private var sleepObserver: NSObjectProtocol?
@@ -34,10 +40,17 @@ final class KeyboardModifierController: ObservableObject {
     init() {
         worker = KeyboardModifierWorker()
         monitorsDevices = true
+        scheduleRefreshWork = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
     }
 
-    init(engine: KeyboardModifierEngine) {
+    init(engine: KeyboardModifierEngine,
+         scheduleRefreshWork: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+         }) {
         worker = KeyboardModifierWorker(engine: engine)
+        self.scheduleRefreshWork = scheduleRefreshWork
         // Simulated controllers use the same worker, but never observe real devices or poll.
         monitorsDevices = false
     }
@@ -54,7 +67,7 @@ final class KeyboardModifierController: ObservableObject {
         let callback: IOHIDDeviceCallback = { context, _, _, _ in
             guard let context else { return }
             MainActor.assumeIsolated {
-                Unmanaged<KeyboardModifierController>.fromOpaque(context).takeUnretainedValue().scheduleRefresh()
+                Unmanaged<KeyboardModifierController>.fromOpaque(context).takeUnretainedValue().devicesDidChange()
             }
         }
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -67,16 +80,16 @@ final class KeyboardModifierController: ObservableObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated {
             self?.isSleeping = false
-            self?.scheduleRefresh()
+            self?.devicesDidChange()
         } }
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated {
             self?.isSleeping = true
+            self?.cancelRecovery()
             self?.updateVerificationTimer()
         } }
-        // One debounced retry lets USB metadata settle; it is not an idle polling loop.
-        scheduleRefresh()
+        devicesDidChange()
     }
 
     func refresh(invalidateDiscovery: Bool = false, completion: (() -> Void)? = nil) {
@@ -120,8 +133,8 @@ final class KeyboardModifierController: ObservableObject {
         guard isRunning else { return }
         isRunning = false
         generation += 1 // Ignore snapshots queued before shutdown/restart.
-        refreshWork?.cancel()
-        refreshWork = nil
+        cancelRecovery()
+        hasRetriedCurrentFailure = false
         timer?.invalidate()
         timer = nil
         if let manager {
@@ -143,12 +156,49 @@ final class KeyboardModifierController: ObservableObject {
         finishIdleWaiters()
     }
 
-    private func scheduleRefresh() {
+    func devicesDidChange() {
         guard isRunning else { return }
+        hasRetriedCurrentFailure = false
+        beginRecovery()
+    }
+
+    private func cancelRecovery() {
+        recoveryGeneration += 1
         refreshWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.refresh(invalidateDiscovery: true) }
+        refreshWork = nil
+        isRecovering = false
+        recoveryAttempt = 0
+    }
+
+    private func beginRecovery() {
+        cancelRecovery()
+        guard isRunning, !isSleeping else { return }
+        isRecovering = true
+        scheduleNextRecoveryRefresh()
+    }
+
+    private func scheduleNextRecoveryRefresh() {
+        guard isRunning, !isSleeping, recoveryAttempt < Self.recoveryDelays.count else {
+            isRecovering = false
+            return
+        }
+        let delay = Self.recoveryDelays[recoveryAttempt]
+        recoveryAttempt += 1
+        let scheduledGeneration = recoveryGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isRunning, !self.isSleeping,
+                  self.recoveryGeneration == scheduledGeneration else { return }
+            self.refreshWork = nil
+            self.refresh(invalidateDiscovery: true) { [weak self] in
+                guard let self, self.isRunning,
+                      self.recoveryGeneration == scheduledGeneration else { return }
+                self.scheduleNextRecoveryRefresh()
+            }
+        }
         refreshWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        // A short, bounded settling sequence also handles KVMs that enumerate late.
+        // It runs even when the connected-device verification timer has stopped.
+        scheduleRefreshWork(delay, work)
     }
 
     private func submit(_ operation: KeyboardModifierWorker.Operation, completion: (() -> Void)? = nil) {
@@ -171,6 +221,13 @@ final class KeyboardModifierController: ObservableObject {
         if errorMessage != state.errorMessage { errorMessage = state.errorMessage }
         needsPeriodicVerification = state.needsPeriodicVerification
         updateVerificationTimer()
+        if state.needsDiscoveryRecovery {
+            let shouldRecover = !hasRetriedCurrentFailure && !isRecovering
+            hasRetriedCurrentFailure = true
+            if shouldRecover { beginRecovery() }
+        } else {
+            hasRetriedCurrentFailure = false
+        }
     }
 
     private func updateVerificationTimer() {

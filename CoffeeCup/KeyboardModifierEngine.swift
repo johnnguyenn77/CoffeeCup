@@ -32,7 +32,16 @@ nonisolated final class KeyboardModifierEngine {
     @discardableResult
     func refresh(invalidateDiscovery: Bool = false) throws -> [ExternalKeyboard] {
         if invalidateDiscovery { provider.invalidateDiscoveryCache() }
-        let connected = try provider.keyboards()
+        let connected: [ExternalKeyboard]
+        do { connected = try provider.keyboards() }
+        catch {
+            // Discovery is temporarily unavailable. Hide stale controls and stop
+            // connected-device polling, but retain preferences and recovery leases.
+            keyboards = []
+            connectedServiceIDs = []
+            appliedKeyboardIDs = []
+            throw error
+        }
         connectedServiceIDs = Set(connected.flatMap(\.serviceIDs))
         keyboards = connected.filter(\.isSelectable)
         appliedKeyboardIDs = []
@@ -60,13 +69,19 @@ nonisolated final class KeyboardModifierEngine {
                         // KVM transitions can remove a service halfway through a refresh. Undo
                         // partial writes, but retain the saved opt-in and retry on the next scan.
                         let retry = (error as? KeyboardModifierError)?.canRetryAfterReconnect == true
-                        throw rollBackFailedEnable(keyboard, disablePreference: !retry) ?? error
+                        let cleanupError = rollBackFailedEnable(keyboard, disablePreference: !retry)
+                        throw cleanupError.map { preferredError(error, $0) } ?? error
                     }
                     appliedKeyboardIDs.insert(keyboard.id)
                 } else {
                     try restore(keyboard)
                 }
-            } catch { if firstError == nil { firstError = error } }
+            } catch {
+                if case .deviceUnavailable? = error as? KeyboardModifierError {
+                    forgetConnection(keyboard)
+                }
+                firstError = preferredError(firstError, error)
+            }
         }
         if let firstError { throw firstError }
         return keyboards
@@ -94,7 +109,13 @@ nonisolated final class KeyboardModifierEngine {
             try apply(keyboard, explicitlyEnabled: true)
             appliedKeyboardIDs.insert(id)
         } catch {
-            throw rollBackFailedEnable(keyboard) ?? error
+            // An unplug during an explicit enable must not erase the user's opt-in.
+            let disconnected: Bool
+            if case .deviceUnavailable? = error as? KeyboardModifierError { disconnected = true }
+            else { disconnected = false }
+            let cleanupError = rollBackFailedEnable(keyboard, disablePreference: !disconnected)
+            if disconnected { forgetConnection(keyboard) }
+            throw cleanupError.map { preferredError(error, $0) } ?? error
         }
     }
 
@@ -105,7 +126,7 @@ nonisolated final class KeyboardModifierEngine {
         var firstError: Error?
         for keyboard in connected {
             do { try restore(keyboard) }
-            catch { if firstError == nil { firstError = error } }
+            catch { firstError = preferredError(firstError, error) }
         }
         appliedKeyboardIDs = []
         if let firstError { throw firstError }
@@ -145,7 +166,7 @@ nonisolated final class KeyboardModifierEngine {
                     try provider.setMapping(restored, for: serviceID)
                 }
                 try update { $0.leases.removeValue(forKey: key) }
-            } catch { if firstError == nil { firstError = error } }
+            } catch { firstError = preferredError(firstError, error) }
         }
         if let firstError { throw firstError }
     }
@@ -161,8 +182,25 @@ nonisolated final class KeyboardModifierEngine {
             catch { cleanupError = error }
         }
         do { try restore(keyboard) }
-        catch { cleanupError = error }
+        catch { cleanupError = preferredError(cleanupError, error) }
         return cleanupError
+    }
+
+    private func preferredError(_ previous: Error?, _ next: Error) -> Error {
+        guard let previous else { return next }
+        // A disappearing service must not hide a settings/journal failure from
+        // another interface or keyboard in the same scan.
+        if (previous as? KeyboardModifierError)?.canRetryAfterReconnect == true,
+           (next as? KeyboardModifierError)?.canRetryAfterReconnect != true { return next }
+        if (previous as? KeyboardModifierError)?.canRetryAfterReconnect == true,
+           case .deviceUnavailable? = next as? KeyboardModifierError { return next }
+        return previous
+    }
+
+    private func forgetConnection(_ keyboard: ExternalKeyboard) {
+        keyboards.removeAll { $0.id == keyboard.id }
+        connectedServiceIDs.subtract(keyboard.serviceIDs)
+        appliedKeyboardIDs.remove(keyboard.id)
     }
 
     private func update(_ change: (inout KeyboardModifierPreferences) -> Void) throws {

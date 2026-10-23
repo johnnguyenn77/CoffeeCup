@@ -19,7 +19,10 @@ xcrun swiftc -swift-version 5 -default-isolation MainActor -parse-as-library -D 
     "$project_root/CoffeeCup/CatModeInputSession.swift" \
     "$project_root/CoffeeCup/CoffeeCupSettingsButton.swift" \
     "$project_root/CoffeeCup/CoffeeCupToggleRow.swift" \
+    "$project_root/CoffeeCup/PopoverInteraction.swift" \
+    "$project_root/Tests/PopoverInteractionTests.swift" \
     "$project_root/Tests/NativeControlTests.swift" \
+    "$project_root/Tests/KeyboardDisconnectTests.swift" \
     "$project_root/Tests/ResourceUsageTests.swift" \
     "$project_root/Tests/KeyboardModifierTests.swift" \
     -o "$output_dir/KeyboardModifierTests"

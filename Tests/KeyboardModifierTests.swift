@@ -29,6 +29,9 @@ nonisolated final class FakeKeyboardHID: KeyboardHIDProviding {
     var values: [UInt64: [ModifierKeyMapping]] = [:]
     var writes: [UInt64] = []
     var failNextWrite: UInt64?
+    var scanError: KeyboardModifierError?
+    var mappingErrors: [UInt64: KeyboardModifierError] = [:]
+    var disconnectOnRead: UInt64?
     var scanCount = 0
     var cacheInvalidations = 0
     var scannedOnMainThread = false
@@ -36,13 +39,19 @@ nonisolated final class FakeKeyboardHID: KeyboardHIDProviding {
     func keyboards() throws -> [ExternalKeyboard] {
         scanCount += 1
         scannedOnMainThread = scannedOnMainThread || Thread.isMainThread
+        if let scanError { throw scanError }
         return connected
     }
     func invalidateDiscoveryCache() { cacheInvalidations += 1 }
     func mapping(for serviceID: UInt64) throws -> [ModifierKeyMapping] {
+        if disconnectOnRead == serviceID {
+            disconnectOnRead = nil
+            connected.removeAll { $0.serviceIDs.contains(serviceID) }
+        }
         guard connected.contains(where: { $0.serviceIDs.contains(serviceID) }) else {
             throw KeyboardModifierError.deviceUnavailable
         }
+        if let error = mappingErrors[serviceID] { throw error }
         return values[serviceID] ?? []
     }
     func setMapping(_ mapping: [ModifierKeyMapping], for serviceID: UInt64) throws {
@@ -394,8 +403,8 @@ enum KeyboardModifierTests {
         controllerProvider.connected = [other]
         controller.setSwapEnabled(true, for: id)
         await controller.waitUntilIdle()
-        check(controller.errorMessage != nil && !WindowsKeyboardMapping.isApplied(to: controllerProvider.values[21] ?? []),
-              "A stale menu never enables a different keyboard after a disconnect")
+        check(controller.errorMessage == nil && !WindowsKeyboardMapping.isApplied(to: controllerProvider.values[21] ?? []),
+              "A stale menu quietly ignores a disconnected keyboard without enabling another")
         controllerProvider.connected = [keyboard, other]
         controller.refresh()
         controller.selectKeyboard(id)
@@ -425,8 +434,10 @@ enum KeyboardModifierTests {
             preconditionFailure("Unreadable recovery state must fail closed")
         } catch { checks += 1 }
         checks += try await NativeControlTests.run()
+        checks += try await KeyboardDisconnectTests.run()
         checks += try await ResourceUsageTests.run()
-        print("PASS: \(checks) keyboard and native-control checks")
+        checks += PopoverInteractionTests.run()
+        print("PASS: \(checks) keyboard, native-control, and popover-state checks")
     }
 
     @MainActor private static func verifyLiveSwap(id: String) throws {

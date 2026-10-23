@@ -1,15 +1,28 @@
 import AppKit
 import SwiftUI
 
+/// Presentation is owned by the popover; a delayed device scan cannot reopen old UI.
+struct CoffeeCupMenuPresentation {
+    let currentSession: () -> Int?
+    let show: (NSMenu, NSButton, Int) -> Void
+
+    static let standalone = CoffeeCupMenuPresentation(currentSession: { 0 }, show: { menu, sender, _ in
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: sender.bounds.maxX - menu.size.width, y: sender.bounds.minY - 4), in: sender)
+    })
+}
+
 /// Use AppKit's menu tracking and target/action rather than rebuilding a SwiftUI Menu
 /// while device discovery publishes changes. Each action keeps the device it was shown for.
 struct CoffeeCupSettingsButton: NSViewRepresentable {
     let caffeinate: CoffeeCupController
     let keyboards: KeyboardModifierController
     let showAbout: () -> Void
+    var menuPresentation: CoffeeCupMenuPresentation = .standalone
 
     func makeCoordinator() -> CoffeeCupSettingsMenu {
-        CoffeeCupSettingsMenu(caffeinate: caffeinate, keyboards: keyboards, showAbout: showAbout)
+        CoffeeCupSettingsMenu(caffeinate: caffeinate, keyboards: keyboards, showAbout: showAbout,
+                              presentation: menuPresentation)
     }
 
     func makeNSView(context: Context) -> FirstClickSettingsButton {
@@ -29,6 +42,7 @@ struct CoffeeCupSettingsButton: NSViewRepresentable {
 
     func updateNSView(_ button: FirstClickSettingsButton, context: Context) {
         context.coordinator.showAbout = showAbout
+        context.coordinator.presentation = menuPresentation
     }
 }
 
@@ -40,23 +54,28 @@ final class CoffeeCupSettingsMenu: NSObject {
     let caffeinate: CoffeeCupController
     let keyboards: KeyboardModifierController
     var showAbout: () -> Void
+    var presentation: CoffeeCupMenuPresentation
+    private var menuRequest = 0
 
     init(caffeinate: CoffeeCupController, keyboards: KeyboardModifierController,
-         showAbout: @escaping () -> Void) {
+         showAbout: @escaping () -> Void, presentation: CoffeeCupMenuPresentation = .standalone) {
         self.caffeinate = caffeinate
         self.keyboards = keyboards
         self.showAbout = showAbout
+        self.presentation = presentation
     }
 
     @objc func showMenu(_ sender: NSButton) {
+        guard let session = presentation.currentSession() else { return }
+        menuRequest += 1
+        let request = menuRequest
         // Refresh off-main before taking the menu snapshot. The asynchronous completion
         // also lets NSButton finish mouse-up before entering the nested tracking loop.
         keyboards.refresh(invalidateDiscovery: true) { [weak self, weak sender] in
-            guard let self, let sender, sender.window?.isVisible == true else { return }
+            guard let self, let sender, sender.window?.isVisible == true,
+                  self.menuRequest == request, self.presentation.currentSession() == session else { return }
             let menu = self.makeMenu()
-            menu.popUp(positioning: nil,
-                       at: NSPoint(x: sender.bounds.maxX - menu.size.width, y: sender.bounds.minY - 4),
-                       in: sender)
+            self.presentation.show(menu, sender, session)
         }
     }
 

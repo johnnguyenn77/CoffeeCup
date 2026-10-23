@@ -3,185 +3,93 @@ import Combine
 import SwiftUI
 
 @MainActor
-final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
-    private let popover = NSPopover()
+final class CoffeeCupAppDelegate: NSObject, NSApplicationDelegate {
+    private var presenter: CoffeeCupPopoverController?
     private var statusItem: NSStatusItem?
     private var activityObserver: AnyCancellable?
     private var catModeObserver: AnyCancellable?
-    private var trackingMenus = Set<ObjectIdentifier>()
-    private var reanchorWork: [DispatchWorkItem] = []
+    private let startCatMode: () -> Bool
+
+    override init() {
+        startCatMode = {
+            CatModeController.shared.setActive(true)
+            return CatModeController.shared.isActive
+        }
+        super.init()
+    }
+
+    #if COFFEECUP_INTERACTION_TESTS
+    init(startCatMode: @escaping () -> Bool) {
+        self.startCatMode = startCatMode
+        super.init()
+    }
+    var presenterForTests: CoffeeCupPopoverController? { presenter }
+    #endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         CatModeController.shared.restoreFunctionKeyModeAfterUnexpectedQuit()
-
         let controller = CoffeeCupController.shared
         controller.startWeeklyUpdateChecks()
         DisplayRotationController.shared.refreshDisplays()
         KeyboardModifierController.shared.start()
 
-        let hostingController = NSHostingController(
-            rootView: ContentView(showAbout: { [weak self] in
-                self?.showAbout()
-            }).environmentObject(controller)
-        )
-        hostingController.sizingOptions = [.preferredContentSize]
-
-        popover.contentViewController = hostingController
-        popover.behavior = .transient
-        popover.animates = false
-        popover.delegate = self
-
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.target = self
-        item.button?.action = #selector(togglePopover(_:))
-        item.button?.toolTip = "CoffeeCup"
         statusItem = item
+        guard let button = item.button else { return }
+        #if COFFEECUP_INTERACTION_TESTS
+        button.toolTip = "CoffeeCup Input Tests"
+        #else
+        button.toolTip = "CoffeeCup"
+        #endif
+        let presenter = CoffeeCupPopoverController(button: button, willOpen: {
+            KeyboardModifierController.shared.refresh(invalidateDiscovery: true)
+            controller.refreshLoginItemStatus()
+        }, startCatMode: startCatMode)
+        self.presenter = presenter
+        let hostingController = NSHostingController(rootView: ContentView(
+            showAbout: { [weak presenter] in presenter?.showAbout() },
+            requestCatMode: { [weak presenter] in presenter?.requestCatMode() },
+            menuPresentation: presenter.menuPresentation
+        ).environmentObject(controller))
+        hostingController.sizingOptions = [.preferredContentSize]
+        presenter.popover.contentViewController = hostingController
         updateStatusIcon(isActive: controller.isActive)
 
-        activityObserver = controller.$isActive
-            .sink { [weak self] isActive in
-                self?.updateStatusIcon(isActive: isActive)
-            }
-
+        activityObserver = controller.$isActive.sink { [weak self] in self?.updateStatusIcon(isActive: $0) }
         catModeObserver = CatModeController.shared.$isActive
             .removeDuplicates()
-            .filter { $0 }
-            // Let the confirmation alert dismiss before closing its containing popover.
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard CatModeController.shared.isActive else { return }
-                self?.popover.performClose(nil)
-            }
-
+            .sink { [weak presenter] in presenter?.send(.catModeChanged($0)) }
         NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(displayConfigurationDidChange),
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
+            self, selector: #selector(displayConfigurationDidChange),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil
         )
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(focusPopover),
-            name: NSApplication.didBecomeActiveNotification, object: NSApp
-        )
-        for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(menuTrackingChanged(_:)), name: name, object: nil
-            )
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSApplication.didChangeScreenParametersNotification,
-            object: nil
-        )
-        NotificationCenter.default.removeObserver(
-            self, name: NSApplication.didBecomeActiveNotification, object: NSApp
-        )
-        for name in [NSMenu.didBeginTrackingNotification, NSMenu.didEndTrackingNotification] {
-            NotificationCenter.default.removeObserver(self, name: name, object: nil)
-        }
-        trackingMenus.removeAll()
-        cancelPopoverReanchors()
+        NotificationCenter.default.removeObserver(self)
+        presenter?.send(.shutdown)
         activityObserver = nil
         catModeObserver = nil
-        popover.close()
         CatModeController.shared.stop()
         KeyboardModifierController.shared.stop()
         CoffeeCupController.shared.stop()
     }
 
-    func popoverDidClose(_ notification: Notification) {
-        statusItem?.button?.state = .off
-        cancelPopoverReanchors()
-    }
-
-    func popoverDidShow(_ notification: Notification) {
-        focusPopover()
-    }
-
-    @objc private func focusPopover() {
-        guard popover.isShown, NSApp.isActive, trackingMenus.isEmpty,
-              let window = popover.contentViewController?.view.window,
-              window.attachedSheet == nil, !window.isKeyWindow else { return }
-        // Reasserting key status while a menu or confirmation is tracking can dismiss
-        // that UI before its mouse-up/action arrives. Only focus when it is actually needed.
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    @objc private func menuTrackingChanged(_ notification: Notification) {
-        guard let menu = notification.object as? NSMenu else { return }
-        if notification.name == NSMenu.didBeginTrackingNotification {
-            trackingMenus.insert(ObjectIdentifier(menu))
-        } else {
-            trackingMenus.remove(ObjectIdentifier(menu))
-        }
-    }
-
-    private func showAbout() {
-        popover.performClose(nil)
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        NSApp.orderFrontStandardAboutPanel(nil)
-    }
-
-    @objc func togglePopover(_ sender: Any?) {
-        guard let button = statusItem?.button else { return }
-
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            if #available(macOS 14.0, *) {
-                NSApp.activate()
-            } else {
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            focusPopover()
-            button.state = .on
-        }
-    }
+    @objc func togglePopover(_ sender: Any?) { presenter?.iconClicked(sender) }
 
     @objc private func displayConfigurationDidChange() {
         DisplayRotationController.shared.refreshDisplays()
-        cancelPopoverReanchors()
-        guard popover.isShown else { return }
-        schedulePopoverReanchor(after: 0.15)
-        schedulePopoverReanchor(after: 0.6)
-    }
-
-    private func schedulePopoverReanchor(after delay: TimeInterval) {
-        let work = DispatchWorkItem { [weak self] in
-            self?.reanchorPopover()
-        }
-        reanchorWork.append(work)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func cancelPopoverReanchors() {
-        reanchorWork.forEach { $0.cancel() }
-        reanchorWork.removeAll()
-    }
-
-    private func reanchorPopover() {
-        guard popover.isShown,
-              let button = statusItem?.button,
-              button.window != nil else { return }
-
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        presenter?.send(.displayChanged)
     }
 
     private func updateStatusIcon(isActive: Bool) {
-        let symbolName = isActive ? "cup.and.saucer.fill" : "cup.and.saucer"
-        guard let image = NSImage(
-            systemSymbolName: symbolName,
-            accessibilityDescription: "CoffeeCup"
-        ) else { return }
-
+        #if COFFEECUP_INTERACTION_TESTS
+        let symbol = "t.square"
+        #else
+        let symbol = isActive ? "cup.and.saucer.fill" : "cup.and.saucer"
+        #endif
+        guard let image = NSImage(systemSymbolName: symbol,
+                                  accessibilityDescription: "CoffeeCup") else { return }
         image.isTemplate = true
         statusItem?.button?.image = image
     }
@@ -193,9 +101,7 @@ struct CoffeeCupApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: CoffeeCupAppDelegate
 
     var body: some Scene {
-        Settings {
-            EmptyView()
-        }
+        Settings { EmptyView() }
     }
 }
 #endif

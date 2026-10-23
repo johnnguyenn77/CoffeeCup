@@ -5,13 +5,32 @@ import SwiftUI
 /// the test window use simulated mappings/rotation; the real popover is explicitly labeled.
 @MainActor
 final class InteractionHarnessDelegate: NSObject, NSApplicationDelegate {
-    private let productionDelegate = CoffeeCupAppDelegate()
+    // Exercise confirmation/closing without ever installing the real input blocker.
+    private let productionDelegate = CoffeeCupAppDelegate(startCatMode: { true })
     private var window: NSWindow?
     private let provider = FakeKeyboardHID()
     private var keyboards: KeyboardModifierController?
+    private var runningPopoverTests = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         productionDelegate.applicationDidFinishLaunching(notification)
+        #if COFFEECUP_SWIFTUI_INTERACTION_TESTS
+        // Keep this fixture AppKit-only: the production popover is the SwiftUI view
+        // under test, not another self-sizing NSHostingController window.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 110),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "CoffeeCup Menu Bar Tests"
+        let label = NSTextField(labelWithString: "Click the T icon in the menu bar to test CoffeeCup.")
+        label.frame = NSRect(x: 16, y: 70, width: 330, height: 22)
+        window.contentView?.addSubview(label)
+        let quit = NSButton(title: "Quit Test App", target: NSApp, action: #selector(NSApplication.terminate(_:)))
+        quit.frame = NSRect(x: 16, y: 20, width: 130, height: 30)
+        window.contentView?.addSubview(quit)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+        NSApp.activate(ignoringOtherApps: true)
+        #else
         let engine = try! KeyboardModifierEngine(provider: provider,
             store: MemoryKeyboardStore(), bootSessionID: "interaction-tests")
         let keyboards = KeyboardModifierController(engine: engine)
@@ -19,6 +38,21 @@ final class InteractionHarnessDelegate: NSObject, NSApplicationDelegate {
         keyboards.start()
         let content = InteractionControls(keyboards: keyboards,
             showPopover: { [weak self] in self?.productionDelegate.togglePopover(nil) },
+            showPopoverLater: { [weak self] in
+                NSApp.hide(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    self?.productionDelegate.togglePopover(nil)
+                }
+            },
+            rapidReopen: { [weak self] in
+                NSApp.hide(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    guard let button = self?.productionDelegate.presenterForTests?.statusButtonForTests else { return }
+                    for _ in 0..<11 { button.performClick(nil) }
+                }
+            },
+            runPopoverTests: { [weak self] in self?.runPopoverTests() },
+            resetCatMode: { [weak self] in self?.productionDelegate.presenterForTests?.send(.catModeChanged(false)) },
             setKeyboardCount: { [weak self] in self?.setKeyboardCount($0) })
         let hosting = NSHostingController(rootView: content)
         hosting.sizingOptions = [.preferredContentSize]
@@ -29,6 +63,25 @@ final class InteractionHarnessDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         self.window = window
         NSApp.activate(ignoringOtherApps: true)
+        #endif
+    }
+
+    private func runPopoverTests() {
+        guard !runningPopoverTests, let presenter = productionDelegate.presenterForTests, let window else { return }
+        runningPopoverTests = true
+        UserDefaults.standard.set("Scheduled native popover checks", forKey: "CoffeeCup.nativePopoverTests")
+        Task {
+            defer { runningPopoverTests = false }
+            // Let the launching click and UI automation finish their own focus
+            // handoff before the suite measures native activation transitions.
+            try? await Task.sleep(for: .seconds(1))
+            UserDefaults.standard.set("Running native popover checks", forKey: "CoffeeCup.nativePopoverTests")
+            let result: String
+            do { result = "PASS: \(try await NativePopoverTests.run(presenter, testWindow: window)) native popover checks" }
+            catch { result = "FAIL: \(error)" }
+            UserDefaults.standard.set(result, forKey: "CoffeeCup.nativePopoverTests")
+            print(result)
+        }
     }
 
     private func setKeyboardCount(_ count: Int) {
@@ -49,6 +102,10 @@ final class InteractionHarnessDelegate: NSObject, NSApplicationDelegate {
 private struct InteractionControls: View {
     @ObservedObject var keyboards: KeyboardModifierController
     let showPopover: () -> Void
+    let showPopoverLater: () -> Void
+    let rapidReopen: () -> Void
+    let runPopoverTests: () -> Void
+    let resetCatMode: () -> Void
     let setKeyboardCount: (Int) -> Void
     @State private var toggle = false
     @State private var toggleChanges = 0
@@ -62,6 +119,10 @@ private struct InteractionControls: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("CoffeeCup Input Tests").font(.headline)
             Button("Open real CoffeeCup popover", action: showPopover)
+            Button("Hide test app, reopen popover after 3 seconds", action: showPopoverLater)
+            Button("Rapid reopen from background", action: rapidReopen)
+            Button("Run popover edge-case tests", action: runPopoverTests)
+            Button("Reset simulated Cat Mode", action: resetCatMode)
             Text("The row and rotation below are simulated; they never block input or rotate your monitor.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             CoffeeCupToggleRow(title: "Click target test", isOn: $toggle)
@@ -113,6 +174,13 @@ private struct InteractionControls: View {
     }
 }
 
+#if COFFEECUP_SWIFTUI_INTERACTION_TESTS
+@main
+struct InteractionHarness: App {
+    @NSApplicationDelegateAdaptor private var delegate: InteractionHarnessDelegate
+    var body: some Scene { Settings { EmptyView() } }
+}
+#else
 @main
 enum InteractionHarness {
     @MainActor static func main() {
@@ -124,3 +192,4 @@ enum InteractionHarness {
         withExtendedLifetime(delegate) {}
     }
 }
+#endif

@@ -26,11 +26,8 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Verify keyboard, native controls, Cat Mode, and resource lifecycle
+      - name: Verify input, popover state, and resource lifecycle
         run: bash scripts/test-keyboard-modifiers.sh
-
-      - name: Verify layout state
-        run: bash scripts/run-clean-popover-demo.sh --test
 
       - name: Build CoffeeCup DMG
         run: ./scripts/create-dmg.sh

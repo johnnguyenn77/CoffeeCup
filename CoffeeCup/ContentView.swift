@@ -3,12 +3,13 @@ import AppKit
 
 struct ContentView: View {
     var showAbout: () -> Void = { NSApp.orderFrontStandardAboutPanel(nil) }
+    var requestCatMode: () -> Void = {}
+    var menuPresentation: CoffeeCupMenuPresentation = .standalone
 
     @EnvironmentObject private var caffeinate: CoffeeCupController
     @StateObject private var displayRotation = DisplayRotationController.shared
     @StateObject private var catMode = CatModeController.shared
     @StateObject private var keyboardModifiers = KeyboardModifierController.shared
-    @State private var confirmCatModeActivation = false
 
     var body: some View {
         if #available(macOS 15.0, *) {
@@ -40,7 +41,7 @@ struct ContentView: View {
                     get: { catMode.isActive },
                     set: { enabled in
                         if enabled {
-                            confirmCatModeActivation = true
+                            requestCatMode()
                         } else {
                             catMode.setActive(false)
                         }
@@ -67,15 +68,6 @@ struct ContentView: View {
         .frame(width: 260, alignment: .topLeading)
         .onAppear {
             caffeinate.refreshLoginItemStatus()
-            keyboardModifiers.refresh()
-        }
-        .alert("Turn On Cat Mode?", isPresented: $confirmCatModeActivation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Turn On Cat Mode", role: .destructive) {
-                catMode.setActive(true)
-            }
-        } message: {
-            Text("Cat Mode blocks keyboard and pointer input, including the trackpad and external mouse. Exit with Control–Option–Command–Escape.")
         }
     }
 
@@ -100,7 +92,7 @@ struct ContentView: View {
             }
 
             CoffeeCupSettingsButton(caffeinate: caffeinate, keyboards: keyboardModifiers,
-                                    showAbout: showAbout)
+                                    showAbout: showAbout, menuPresentation: menuPresentation)
                 .frame(width: 28, height: 28)
         }
     }

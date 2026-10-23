@@ -5,6 +5,7 @@ nonisolated struct KeyboardModifierSnapshot: Sendable {
     var selectedKeyboardID: String?
     var swapsModifiers = false
     var needsPeriodicVerification = false
+    var needsDiscoveryRecovery = false
     var errorMessage: String?
 }
 
@@ -47,7 +48,14 @@ nonisolated final class KeyboardModifierWorker: @unchecked Sendable {
                 }
                 state = snapshot()
             } catch {
-                state = snapshot(error: error.localizedDescription)
+                let keyboardError = error as? KeyboardModifierError
+                let message: String?
+                // Device disappearance is normal, including a stale menu action.
+                // Keep real mapping and persistence errors visible.
+                if case .deviceUnavailable? = keyboardError { message = nil }
+                else { message = error.localizedDescription }
+                state = snapshot(error: message,
+                    needsDiscoveryRecovery: keyboardError?.canRetryAfterReconnect == true)
             }
             DispatchQueue.main.async { completion(state) }
         }
@@ -62,13 +70,16 @@ nonisolated final class KeyboardModifierWorker: @unchecked Sendable {
         }
     }
 
-    private func snapshot(error: String? = nil) -> KeyboardModifierSnapshot {
-        guard let engine else { return KeyboardModifierSnapshot(errorMessage: error) }
+    private func snapshot(error: String? = nil, needsDiscoveryRecovery: Bool = false) -> KeyboardModifierSnapshot {
+        guard let engine else {
+            return KeyboardModifierSnapshot(needsDiscoveryRecovery: needsDiscoveryRecovery, errorMessage: error)
+        }
         let selection = engine.preferences.selectedKeyboardID
         return KeyboardModifierSnapshot(keyboards: engine.keyboards,
             selectedKeyboardID: selection,
             swapsModifiers: selection.map { engine.appliedKeyboardIDs.contains($0) } ?? false,
             needsPeriodicVerification: engine.needsPeriodicVerification,
+            needsDiscoveryRecovery: needsDiscoveryRecovery,
             errorMessage: error)
     }
 }

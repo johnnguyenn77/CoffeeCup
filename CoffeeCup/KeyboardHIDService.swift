@@ -6,18 +6,23 @@ import IOKit.hidsystem
 
 /// Confined to the keyboard worker's serial queue; it never reads input events.
 nonisolated final class KeyboardHIDService: KeyboardHIDProviding {
-    private let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+    private var client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
     private var services: [UInt64: IOHIDServiceClient] = [:]
     private var cachedUSBTopology: Set<UInt64> = []
     private var cachedUSBRoles: [String: ExternalKeyboard.USBInputRole]?
     private(set) var usbClassificationScans = 0
 
     func invalidateDiscoveryCache() {
+        // A KVM can invalidate the client's service handles. Rebuild discovery on
+        // topology changes/recovery instead of requiring the app to be restarted.
+        client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
+        services = [:]
         cachedUSBRoles = nil
     }
 
     func keyboards() throws -> [ExternalKeyboard] {
         guard let all = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] else {
+            services = [:]
             throw KeyboardModifierError.deviceUnavailable
         }
         var grouped: [String: ExternalKeyboard] = [:]
