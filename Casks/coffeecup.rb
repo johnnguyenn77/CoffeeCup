@@ -1,6 +1,6 @@
 cask "coffeecup" do
-  version "1.0.12"
-  sha256 "1ab727a147f13a04ef4379ba8a60c0a6132be5a92ddc970e40db3d9f348960c8"
+  version "1.0.13"
+  sha256 "b624c2508e676de10ec86777e169dcab9f41b99c2c55b3e8c9692c27b05f56aa"
 
   url "https://github.com/johnnguyenn77/CoffeeCup/releases/download/v#{version}/CoffeeCup.dmg"
   name "CoffeeCup"
